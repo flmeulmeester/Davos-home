@@ -1,0 +1,445 @@
+---
+title: "Davos@home Plotting missingness patterns in patient-reported exacerbation data"
+author: "Fleur L. Meulmeester, PhD Candidate Leiden, The Netherlands"
+date: "2026-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load packages and read the data
+
+```{r}
+# Load required packages.
+# Install packages once if needed; library() loads them for each session.
+
+# install.packages("ggplot2")
+# install.packages("dplyr")
+# install.packages("tidyr")
+# install.packages("ggforce")
+# install.packages("openxlsx")
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggforce)
+library(openxlsx)
+
+# Read the prepared exacerbation dataset.
+# The dataset is not included in this public repository.
+# Place an authorised local copy in data/processed/ before running this script.
+
+data_EXAC <- read.xlsx(
+  "data/processed/data_EXAC.xlsx",
+  sheet = 1
+)
+```
+
+
+# Check missing weekly follow-up data
+
+```{r}
+# Create one row for every participant and each of the 48 planned
+# follow-up weeks, including weeks without a questionnaire record.
+all_weeks <- expand.grid(
+  patid = unique(data_EXAC$patid),
+  fu_week = 1:48
+)
+
+# Mark observed questionnaire records, then merge them with the complete
+# participant-week grid. Weeks without a matching record are marked 0;
+# weeks with a record are marked 1.
+plot_data <- all_weeks %>%
+  mutate(has_data = 0) %>%
+  left_join(
+    data_EXAC %>% mutate(has_data = 1),
+    by = c("patid", "fu_week"),
+    suffix = c("", ".y")
+  ) %>%
+  mutate(
+    has_data = ifelse(is.na(has_data.y), has_data, has_data.y)
+  ) %>%
+  dplyr::select(patid, fu_week, has_data)
+
+# Keep one row per participant and follow-up week.
+plot_data <- plot_data %>%
+  distinct(patid, fu_week, .keep_all = TRUE)
+```
+
+
+# Plot questionnaire completeness by participant
+
+```{r}
+# Define participant IDs
+ltfu_patids <- # add IDs here
+late_start_patids <- # add IDs here
+
+# Create annotation data for participants with incomplete follow-up.
+annot_df <- data.frame(
+  patid = ltfu_patids,
+  x = rep(40, length(ltfu_patids)),
+  y = rep(0.5, length(ltfu_patids)),
+  label = rep("LTFU", length(ltfu_patids))
+)
+
+# Create annotation data for participants who started follow-up late.
+late_start_df <- data.frame(
+  patid = late_start_patids,
+  x = rep(5, length(late_start_patids)),
+  y = rep(0.5, length(late_start_patids)),
+  label = rep("Late start", length(late_start_patids))
+)
+
+# Combine the annotation data.
+annotations <- rbind(annot_df, late_start_df)
+
+# Assign colours according to treatment group.
+# CTgroup and IVgroup must be defined in the local analysis environment.
+plot_data$group_color <- ifelse(
+  plot_data$patid %in% CTgroup, "CTgroup",
+  ifelse(plot_data$patid %in% IVgroup, "IVgroup", "Other")
+)
+
+# Set up the number of participant panels per page.
+ncol <- 3
+nrow <- 4
+n_per_page <- ncol * nrow
+
+# Count the unique participants and calculate the number of pages needed.
+n_panels <- length(unique(plot_data$patid))
+n_pages <- ceiling(n_panels / n_per_page)
+
+# Create the output directory if it does not already exist.
+dir.create("figures", showWarnings = FALSE, recursive = TRUE)
+
+# Save the plots as a multi-page PDF.
+pdf(
+  "figures/missing_EXAC_questionnaires.pdf",
+  width = 14,
+  height = 16
+)
+
+for (i in 1:n_pages) {
+
+  p <- ggplot(
+    plot_data,
+    aes(x = fu_week, y = has_data, fill = group_color)
+  ) +
+    geom_col(width = 1) +
+    scale_fill_manual(values = c(
+      "CTgroup" = "orange",
+      "IVgroup" = "steelblue",
+      "Other" = "grey"
+    )) +
+    scale_x_continuous(
+      breaks = seq(0, 48, by = 2),
+      limits = c(0, 48)
+    ) +
+    scale_y_continuous(
+      breaks = c(0, 1),
+      limits = c(0, 1.1)
+    ) +
+    ggforce::facet_wrap_paginate(
+      ~patid,
+      ncol = ncol,
+      nrow = nrow,
+      page = i,
+      scales = "free_x"
+    ) +
+    geom_text(
+      data = annotations,
+      aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      color = "purple3",
+      size = 5,
+      fontface = "bold"
+    ) +
+    labs(
+      x = "Follow-up week",
+      y = "Weekly EXAC questionnaire present (1 = yes)",
+      fill = NULL
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      strip.text = element_text(size = 16, face = "bold"),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 12),
+      panel.spacing = unit(0.3, "lines"),
+      axis.ticks = element_line(),
+      legend.position = "none"
+    )
+
+  print(p)
+}
+
+dev.off()
+```
+
+
+
+# Add exacerbation, hospital visit and antibiotic indicators
+
+```{r}
+# Identify weeks with a recorded hospital visit or a hospital-related
+# medication-change indicator.
+data_EXAC <- data_EXAC %>%
+  mutate(
+    all_zkh_fu_week = case_when(
+      EXAmed_change_weekly == 4 ~ fu_week,
+      EXAhospital_visit == 1 ~ fu_week
+    )
+  )
+
+# Identify weeks with a recorded antibiotic course or an antibiotic-related
+# medication-change indicator.
+data_EXAC <- data_EXAC %>%
+  mutate(
+    all_ab_fu_week = case_when(
+      EXAmed_change_weekly == 3 ~ fu_week,
+      EXAantibiotics == 1 ~ fu_week
+    )
+  )
+
+# Extract the participant-week combinations corresponding to recorded
+# exacerbations. Exclude missing event weeks.
+exa_points <- data_EXAC %>%
+  filter(
+    !is.na(all_exa_fu_week),
+    all_exa_fu_week == fu_week
+  ) %>%
+  dplyr::select(patid, fu_week)
+
+# Extract participant-week combinations corresponding to hospital visits.
+zkh_points <- data_EXAC %>%
+  filter(
+    !is.na(all_zkh_fu_week),
+    all_zkh_fu_week == fu_week
+  ) %>%
+  dplyr::select(patid, fu_week)
+
+# Extract participant-week combinations corresponding to antibiotic use.
+ab_points <- data_EXAC %>%
+  filter(
+    !is.na(all_ab_fu_week),
+    all_ab_fu_week == fu_week
+  ) %>%
+  dplyr::select(patid, fu_week)
+
+# Save the plots with event indicators as a multi-page PDF.
+pdf(
+  "figures/missing_EXAC_questionnaires_with_events.pdf",
+  width = 14,
+  height = 16
+)
+
+for (i in 1:n_pages) {
+
+  p_exa_hospi_ab <- ggplot(
+    plot_data,
+    aes(x = fu_week, y = has_data, fill = group_color)
+  ) +
+    geom_col(width = 1) +
+    scale_fill_manual(values = c(
+      "CTgroup" = "orange",
+      "IVgroup" = "steelblue",
+      "Other" = "grey"
+    )) +
+    scale_x_continuous(
+      breaks = seq(0, 48, by = 2),
+      limits = c(0, 48)
+    ) +
+    # Extend the y-axis to make space for the event markers.
+    scale_y_continuous(
+      breaks = c(0, 1),
+      limits = c(0, 1.2)
+    ) +
+    ggforce::facet_wrap_paginate(
+      ~patid,
+      ncol = ncol,
+      nrow = nrow,
+      page = i,
+      scales = "free_x"
+    ) +
+    geom_text(
+      data = annotations,
+      aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      color = "purple3",
+      size = 5,
+      fontface = "bold"
+    ) +
+    # Black dots indicate weeks with a recorded exacerbation.
+    geom_point(
+      data = exa_points,
+      aes(x = fu_week, y = 1.05),
+      inherit.aes = FALSE,
+      color = "black",
+      size = 3
+    ) +
+    # White-filled circles with black outlines indicate hospital visits.
+    geom_point(
+      data = zkh_points,
+      aes(x = fu_week, y = 1.10),
+      inherit.aes = FALSE,
+      color = "black",
+      fill = "white",
+      shape = 21,
+      size = 3
+    ) +
+    # Grey dots indicate weeks with recorded antibiotic use.
+    geom_point(
+      data = ab_points,
+      aes(x = fu_week, y = 1.15),
+      inherit.aes = FALSE,
+      color = "grey",
+      size = 3
+    ) +
+    labs(
+      x = "Follow-up week",
+      y = "Weekly EXAC questionnaire present (1 = yes)",
+      fill = NULL
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      strip.text = element_text(size = 16, face = "bold"),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 12),
+      panel.spacing = unit(0.3, "lines"),
+      axis.ticks = element_line(),
+      legend.position = "none"
+    )
+
+  print(p_exa_hospi_ab)
+}
+
+dev.off()
+```
+
+
+
+# Display participants grouped by treatment arm
+
+```{r}
+# Order participants by treatment group, followed by any participants
+# not included in either treatment-group vector.
+ordered_patids <- c(
+  IVgroup,
+  CTgroup,
+  setdiff(unique(plot_data$patid), c(IVgroup, CTgroup))
+)
+
+# Apply the same participant order to the plot data and annotations.
+plot_data$patid <- factor(
+  plot_data$patid,
+  levels = ordered_patids
+)
+
+annotations$patid <- factor(
+  annotations$patid,
+  levels = ordered_patids
+)
+
+exa_points$patid <- factor(
+  exa_points$patid,
+  levels = ordered_patids
+)
+
+zkh_points$patid <- factor(
+  zkh_points$patid,
+  levels = ordered_patids
+)
+
+ab_points$patid <- factor(
+  ab_points$patid,
+  levels = ordered_patids
+)
+
+# Save the treatment-group-ordered plots.
+pdf(
+  "figures/missing_EXAC_questionnaires_with_events_by_group.pdf",
+  width = 14,
+  height = 16
+)
+
+for (i in 1:n_pages) {
+
+  p_exa_hospi_ab <- ggplot(
+    plot_data,
+    aes(x = fu_week, y = has_data, fill = group_color)
+  ) +
+    geom_col(width = 1) +
+    scale_fill_manual(values = c(
+      "CTgroup" = "orange",
+      "IVgroup" = "steelblue",
+      "Other" = "grey"
+    )) +
+    scale_x_continuous(
+      breaks = seq(0, 48, by = 2),
+      limits = c(0, 48)
+    ) +
+    scale_y_continuous(
+      breaks = c(0, 1),
+      limits = c(0, 1.2)
+    ) +
+    ggforce::facet_wrap_paginate(
+      ~patid,
+      ncol = ncol,
+      nrow = nrow,
+      page = i,
+      scales = "free_x"
+    ) +
+    geom_text(
+      data = annotations,
+      aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      color = "purple3",
+      size = 5,
+      fontface = "bold"
+    ) +
+    geom_point(
+      data = exa_points,
+      aes(x = fu_week, y = 1.05),
+      inherit.aes = FALSE,
+      color = "black",
+      size = 3
+    ) +
+    geom_point(
+      data = zkh_points,
+      aes(x = fu_week, y = 1.10),
+      inherit.aes = FALSE,
+      color = "black",
+      fill = "white",
+      shape = 21,
+      size = 3
+    ) +
+    geom_point(
+      data = ab_points,
+      aes(x = fu_week, y = 1.15),
+      inherit.aes = FALSE,
+      color = "grey",
+      size = 3
+    ) +
+    labs(
+      x = "Follow-up week",
+      y = "Weekly EXAC questionnaire present (1 = yes)",
+      fill = NULL
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      strip.text = element_text(size = 16, face = "bold"),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 12),
+      panel.spacing = unit(0.3, "lines"),
+      axis.ticks = element_line(),
+      legend.position = "none"
+    )
+
+  print(p_exa_hospi_ab)
+}
+
+dev.off()
+```
+
