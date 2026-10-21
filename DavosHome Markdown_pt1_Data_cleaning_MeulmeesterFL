@@ -1,0 +1,1464 @@
+---
+title: "Davos@home Data Cleaning and Screening"
+author: "Fleur L. Meulmeester, PhD Candidate Leiden, The Netherlands"
+date: "2026-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load the necessary packages and data
+
+```{r, echo=FALSE}
+# Define a vector of packages used throughout the analysis
+Packages <- c("readstata13", "readxl", "dplyr", "tidyverse", "foreign", "lubridate", "rio", "openxlsx", "haven")
+
+# Load all necessary libraries
+lapply(Packages, library, character.only = TRUE)
+```
+
+
+```{r, echo=FALSE}
+# Load the study data
+# Replace the placeholder with the path to your local data file
+data <- readstata13::read.dta13("path/to/data.dta")
+```
+
+
+```{r}
+# Define the expected study population using the study-specific
+# inclusion criteria and participant allocation information.
+#
+
+# expected_participants <- ... Fill in participant selection
+# participants_not_started <- ... Fill in participant selection
+
+# Check which participants are present in the dataset but are not
+# part of the expected study population.
+participants_not_expected <- setdiff(
+  unique(data$patid),
+  expected_participants
+)
+
+# Check whether any expected participants are missing from the dataset.
+participants_missing <- setdiff(
+  expected_participants,
+  unique(data$patid)
+)
+
+# Investigate discrepancies before proceeding.
+# Confirm whether unexpected participants are ineligible, did not start
+# the study, were lost to follow-up, or require another explanation.
+#
+# If unexpected participants are confirmed to be ineligible for the
+# analyses, exclude them from the analysis dataset.
+
+# Exclude participants who did not start the study, based on the
+# verified study-specific exclusion list.
+data <- data %>%
+  filter(!patid %in% participants_not_started)
+
+# Verify the number of unique participants remaining in the dataset.
+n_distinct(data$patid)
+
+```
+
+# Data variable dictionary
+
+```{r}
+# What data type are assiged to which variable?
+# Create a dataframe with variable names and their data types
+variable_types <- data.frame(
+  Variable = names(data),
+  DataType = vapply(data, 
+                    function(x) class(x)[1], 
+                    character(1)),
+  stringsAsFactors = FALSE
+)
+```
+
+
+# Difference in days between questionnaires
+
+```{r}
+# Make sure var datequest2 (for the date) is in the correct date format
+# Use datequest2 from Alchemer, as this reflects the recorded questionnaire
+# date, including cases where a patient selected 'other date'
+
+data$datequest2 <- format(data$datequest2, "%Y-%m-%d") # Format as DD-MM-YYYY
+```
+
+
+```{r}
+# Calculate the number of days since the previous questionnaire
+# Differences are calculated separately for each participant and questionnaire
+# type. The first questionnaire in each group has no previous date, so days_diff
+# is set to NA.
+data <- data %>%
+  group_by(patid, type) %>%  # Group by both patid AND type
+  mutate(days_diff = if_else(
+    !is.na(lag(datequest2)),
+    as.numeric(difftime(datequest2, lag(datequest2), units = "days")),
+    NA_real_
+  ), .after = datequest2) %>%
+  ungroup() %>%
+  arrange(patid, datequest2)  # Re-sort to maintain chronological order = datequest2)
+
+```
+
+
+
+
+# Engagement in app
+
+```{r}
+# We used a cross-tabulation to examine app engagement (uid_from) by intervention arm. 
+# Row percentages were calculated to show the distribution of 
+# app engagement categories within each row of the table.
+
+install.packages("gmodels")
+library(gmodels)
+
+CrossTable(data$uid_from, data$arm, 
+           prop.r = TRUE,  # Row percentages
+           prop.c = FALSE, # Column percentages
+           prop.t = FALSE, # Total percentages
+           prop.chisq = FALSE)
+```
+
+
+# Create wide-format questionnaire datasets 
+
+```{r}
+# 1. Prepare the questionnaire data
+# Keep questionnaire records and exclude exacerbation records
+data_wide <- data %>%
+  filter(type != "EXAC")
+```
+
+
+```{r}
+# Data quality corrections
+# Before classifying questionnaire records, apply the documented data quality
+# corrections to the source data in the authorised analysis environment.
+#
+# Participant-specific identifiers and correction values are intentionally
+# omitted from this public script. The analysis assumes that the required
+# corrections have been applied and checked before proceeding.
+#
+# The correction log should be maintained separately in accordance with
+# the study's data governance and reproducibility procedures.
+```
+
+
+```{r}
+# 2. Assign questionnaire records to follow-up time points
+
+data_wide <- data_wide %>%
+  mutate(
+    quest_month = case_when(
+      type == "STARTQ" ~ "baseline",
+      type == "preWPAIDatH" ~ "baseline",
+      type != "STARTQ" & type != "preWPAIDatH" & fu_day <= 50 ~ "baseline",
+      type != "STARTQ" & type != "preWPAIDatH" & fu_day > 50 & fu_day <= 5.5*28 ~ "3 months",
+      type != "STARTQ" & type != "preWPAIDatH" & fu_day > 5.5*28 &  fu_day <= 8.5*28 ~ "6 months",
+      type != "STARTQ" & type != "preWPAIDatH" & fu_day > 8.5*28 &  fu_day <= 11.5*28 ~ "9 months",
+      type != "STARTQ" & type != "preWPAIDatH" & fu_day > 11.5*28 &  fu_day <= 16*28 ~ "12 months"
+    ), .after = "fu_day"
+  )
+
+# Inspect the number of records assigned to each time point
+table(data_wide$quest_month)
+
+# Some questionnaires were collected at fewer time points than the main follow-up schedule
+#Their assigned time points are adjusted accordingly:
+
+# Adjust HADS time points to match its collection schedule
+data_wide <- data_wide %>%
+  mutate(quest_month = case_when(
+    type == "HADS" & quest_month == "3 months" ~ "baseline",
+    type == "HADS" & quest_month == "9 months" ~ "6 months",
+    TRUE ~ quest_month
+  ))
+
+# Adjust SNOT time points to match its collection schedule
+data_wide <- data_wide %>%
+  mutate(quest_month = case_when(
+    type == "SNOT" & quest_month == "3 months" ~ "baseline",
+    TRUE ~ quest_month
+  ))
+
+# Create short time-point labels for the wide-format variable names
+data_wide <- data_wide %>%
+  mutate(
+    quest_t = case_when(
+      quest_month == "baseline" ~ "t0",
+      quest_month == "3 months" ~ "t3",
+      quest_month == "6 months" ~ "t6",
+      quest_month == "9 months" ~ "t9",
+      quest_month == "12 months" ~ "t12"
+    ), .after = "quest_month"
+  )
+```
+
+
+```{r}
+# 3. Retain one questionnaire record per participant and time point
+
+# Retain the earliest questionnaire record per participant,
+# questionnaire type and assigned follow-up time point
+data_wide <- data_wide %>%
+  group_by(patid, type, quest_month) %>%
+  slice_min(order_by = fu_day, with_ties = FALSE) %>%
+  ungroup()
+```
+
+
+```{r}
+# 4. Reshape individual questionnaires to wide format
+
+# Remove variables not required for the subsequent reshaping
+data_wide$ACQ7 <- NULL
+data_wide$quest <- NULL
+
+library(tidyselect)
+
+# Asthma Control Questionnaire (6-item version)
+data_ACQ6_wide <- data_wide %>%
+  filter(type == "ACQ6") %>%
+  rename_with(~ paste0("ACQ_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("ACQ"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+# Arrange columns by follow-up time point
+data_ACQ6_wide <- data_ACQ6_wide %>%
+  relocate(matches("_t0$"), .after = patid) %>%
+  relocate(matches("_t3$"), .after = last_col()) %>%
+  relocate(matches("_t6$"), .after = last_col()) %>%
+  relocate(matches("_t9$"), .after = last_col()) %>%
+  relocate(matches("_t12$"), .after = last_col())
+
+# Mini Asthma Quality of Life Questionnaire
+data_AQLQ_wide <- data_wide %>%
+  filter(type == "mAQLQ") %>%
+  rename_with(~ paste0("mAQLQ_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("mAQLQ"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+data_AQLQ_wide <- data_AQLQ_wide %>%
+  relocate(matches("_t0$"), .after = patid) %>%
+  relocate(matches("_t3$"), .after = last_col()) %>%
+  relocate(matches("_t6$"), .after = last_col()) %>%
+  relocate(matches("_t9$"), .after = last_col()) %>%
+  relocate(matches("_t12$"), .after = last_col())
+
+# Checklist Individual Strength – fatigue questionnaire
+data_CISF_wide <- data_wide %>%
+  filter(type == "CISF") %>%
+  rename_with(~ paste0("CISF_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("CISF"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+data_CISF_wide <- data_CISF_wide %>%
+  relocate(matches("_t0$"), .after = patid) %>%
+  relocate(matches("_t3$"), .after = last_col()) %>%
+  relocate(matches("_t6$"), .after = last_col()) %>%
+  relocate(matches("_t9$"), .after = last_col()) %>%
+  relocate(matches("_t12$"), .after = last_col())
+
+# Hospital Anxiety and Depression Scale
+data_HADS_wide <- data_wide %>%
+  filter(type == "HADS") %>%
+  rename_with(~ paste0("HADS_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("HADS"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+# Arrange HADS columns according to its collection schedule
+data_HADS_wide <- data_HADS_wide %>%
+  relocate(matches("_t0$"), .after = patid) %>%
+  relocate(matches("_t6$"), .after = last_col()) %>%
+  relocate(matches("_t12$"), .after = last_col())
+
+# SNOT questionnaire
+data_SNOT_wide <- data_wide %>%
+  filter(type == "SNOT") %>%
+  rename_with(~ paste0("SNOT_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("SNOT"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+# Baseline questionnaire (STARTQ)
+data_STARTQ_wide <- data_wide %>%
+  filter(type == "STARTQ") %>%
+  rename_with(~ paste0("STR_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("STR"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+# Work Productivity and Activity Impairment questionnaire
+# collected during follow-up
+data_HCU_wide <- data_wide %>%
+  filter(type == "WPAIDatH") %>%
+  rename_with(~ paste0("HCU_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("HCU"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+data_HCU_wide <- data_HCU_wide %>%
+  relocate(matches("_t0$"), .after = patid) %>%
+  relocate(matches("_t3$"), .after = last_col()) %>%
+  relocate(matches("_t6$"), .after = last_col()) %>%
+  relocate(matches("_t9$"), .after = last_col()) %>%
+  relocate(matches("_t12$"), .after = last_col())
+
+# Pre-rehabilitation Work Productivity and Activity Impairment
+# questionnaire, used as the baseline assessment
+data_preWPAI_wide <- data_wide %>%
+  filter(type == "preWPAIDatH") %>%
+  rename_with(~ paste0("H12_", .), c("fu_day","datequest2","startunix","endunix","otherdate","act_nid")) %>%
+  pivot_wider(
+    id_cols = patid,
+    names_from = quest_t,
+    values_from = starts_with("H12"),
+    names_glue = "{.value}_{quest_t}"
+  )
+
+```
+
+
+
+
+```{r}
+# 5. Create questionnaire completion indicators
+# 1: a questionnaire date is recorded.
+# 0: no questionnaire date is recorded.
+
+# Baseline questionnaire completion indicator
+data_STARTQ_wide <- data_STARTQ_wide %>%
+  mutate(
+    START_yes = ifelse(!is.na(STR_datequest2_t0), 1, 0),
+    .after = patid
+  )
+
+# Helper function to create questionnaire completion indicators
+add_yes_indicators <- function(df, prefix, timepoints = c("t12","t9","t6","t3","t0")) {
+  for(tp in timepoints) {
+    datevar <- paste0(prefix, "_datequest2_", tp)
+    yesvar  <- paste0(prefix, "_", tp, "_yes")
+    if(datevar %in% colnames(df)) {
+      df[[yesvar]] <- ifelse(!is.na(df[[datevar]]), 1, 0)
+      df <- df %>% relocate(all_of(yesvar), .after = patid)
+    }
+  }
+  return(df)
+}
+
+# Apply the helper function to each questionnaire dataset
+data_ACQ6_wide <- add_yes_indicators(data_ACQ6_wide, "ACQ")
+data_AQLQ_wide <- add_yes_indicators(data_AQLQ_wide, "mAQLQ")
+data_CISF_wide <- add_yes_indicators(data_CISF_wide, "CISF")
+data_HADS_wide <- add_yes_indicators(data_HADS_wide, "HADS")
+data_SNOT_wide <- add_yes_indicators(data_SNOT_wide, "SNOT")
+data_HCU_wide <- add_yes_indicators(data_HCU_wide, "HCU")
+data_preWPAI_wide <- add_yes_indicators(data_preWPAI_wide, "H12")
+
+```
+
+
+```{r}
+# 6. Merge questionnaire datasets'
+
+# Step 1: Select the main patient-level vars (one row per patient)
+patient_vars <- data_wide %>%
+  select(name, name_d, uid, discharge, arm, patid) %>%
+  distinct(patid, .keep_all = TRUE)  # ensure one row per patient
+
+# Step 2: Merge all questionnaires wide datasets with patient_vars
+data_final_wide <- patient_vars %>%
+  left_join(data_STARTQ_wide, by = "patid") %>%
+  left_join(data_preWPAI_wide, by = "patid") %>%
+  left_join(data_ACQ6_wide, by = "patid") %>%
+  left_join(data_AQLQ_wide, by = "patid") %>%
+  left_join(data_CISF_wide, by = "patid") %>%
+  left_join(data_HCU_wide, by = "patid") %>%
+  left_join(data_HADS_wide, by = "patid") %>%
+  left_join(data_SNOT_wide, by = "patid")
+  
+```
+
+
+```{r}
+# 7. Prepare and merge additional baseline data
+
+# Import baseline variables from the study's baseline export
+# Replace the placeholder path with the location of the relevant file
+data_baseline <- read_excel("path/to/baseline_export.xlsx")
+
+# Standardise the randomisation-group variable
+data_baseline <- data_baseline %>%
+  rename(arm = `Randomization Group`)
+
+# Extract the numeric participant identifier
+data_baseline <- data_baseline %>%
+  mutate(patid = str_extract(`Participant Id`, "\\d+"))
+
+# Apply any verified data-quality corrections documented for the study.
+# Participant-specific corrections are omitted from this public example.
+
+# Remove administrative variables not required for the analysis
+data_baseline$`Participant Status` <- NULL
+data_baseline$`Site Abbreviation` <- NULL
+data_baseline$`Participant Creation Date` <- NULL
+
+# Import discharge measurements and IgE data
+data_ontslag <- read_sav("path/to/discharge_measurements.sav")
+data_ige <- read_sav("path/to/IgE_measurements.sav")
+
+# Extract participant identifiers from the original IgE data
+data_ige$patid <- as.numeric(gsub("\\D", "", data_ige$`d@h`))
+
+# Restrict the baseline and IgE datasets to the analysis population
+data_baseline_130 <- subset(data_baseline, patid %in% all_participants)
+data_ige_n130 <- subset(data_ige, patid %in% all_participants)
+
+# Standardise participant identifier types before merging
+data_baseline_130 <- data_baseline_130 %>% mutate(patid = as.character(patid))
+data_ontslag <- data_ontslag %>% mutate(patid = as.character(patid))
+data_ige_n130 <- data_ige_n130 %>% mutate(patid = as.character(patid))
+
+# Remove source-specific identifiers and administrative dates
+data_ige_n130$`d@h` <- NULL
+data_ige_n130$BEGINDATUM <- NULL
+data_ige_n130$EINDDATUM <- NULL
+
+# Remove measurements not required from the discharge dataset
+data_ontslag$IgET1 <- NULL
+data_ontslag$EosT1 <- NULL
+
+# Merge discharge, baseline and IgE data
+data_baseline <- data_ontslag %>%
+  left_join(data_baseline_130, by = "patid") %>%
+  left_join(data_ige_n130, by = "patid")
+
+# Remove variables that are not required in the final baseline dataset
+data_baseline <- data_baseline %>%
+  select(-starts_with("STR"))
+
+data_baseline$name <- NULL
+data_baseline$'d@h' <- NULL
+data_baseline$ontslag_davosathome <- NULL
+data_baseline$ontslagdatum <- NULL
+data_baseline$randomized <- NULL
+data_baseline$discharge <- NULL
+data_baseline$intervention_A <- NULL
+data_baseline$`Participant Id` <- NULL
+data_baseline$arm <- NULL
+data_baseline$dem_birth_year <- NULL
+data_baseline$dem_month <- NULL
+data_baseline$dem_sex <- NULL
+data_baseline$dem_no_export <- NULL
+data_baseline$rand_calc <- NULL
+```
+
+
+```{r}
+# 8. Merge baseline variables with the questionnaire dataset
+
+# Standardise participant identifier type
+data_final_wide$patid <- as.character(data_final_wide$patid)
+
+# Add baseline variables to the questionnaire dataset
+data_final_wide <- data_final_wide %>%
+  left_join(data_baseline, by = "patid")
+```
+
+
+```{r}
+# 9. Derive additional baseline variables
+
+# Create IgET1_replaced, using IgET1 when available and otherwise using IgET0. 
+# This creates a variable that prioritises the T1 measurement and 
+# falls back to the T0 measurement when T1 is missing.
+
+data_final_wide <- data_final_wide %>%
+  mutate(IgET1_replaced =
+           case_when(
+             is.na(IgET1) ~ IgET0,
+             TRUE ~ IgET1
+           ), .after = IgET1)
+
+# Classify chronic rhinosinusitis subgroups
+# Chronic rhinosinusitis with nasal polyps
+data_final_wide <- data_final_wide %>%
+  mutate(CRSwNP = ifelse(
+    nasal_polyps == 1 & chron_rs == 1, 1, 0
+  ), .after = nasal_polyps)
+
+# Chronic rhinosinusitis without nasal polyps
+data_final_wide <- data_final_wide %>%
+  mutate(CRSsNP = ifelse(
+    nasal_polyps == 0 & chron_rs == 1, 1, 0
+  ), .after = CRSwNP)
+
+# Convert BMI to numeric
+data_final_wide$BMI <- as.numeric(data_final_wide$BMI)
+```
+
+
+# Export the wide-format dataset 
+
+```{r}
+# Export the prepared wide-format dataset for subsequent analysis.
+# The exported file contains participant-level data and is not included
+# in the public repository.
+library(openxlsx)
+write.xlsx(data_final_wide, "data/processed/data_wide_format.xlsx")
+
+# Load the prepared wide-format dataset.
+# This step requires an authorised local copy of the dataset at the
+# specified path; the data are not distributed with this repository.
+data_final_wide <- read.xlsx("data/processed/data_wide_format.xlsx", sheet = 1)
+```
+
+
+# Follow-up duration for participant flow diagram
+
+```{r}
+# Follow-up duration for participant flow diagram
+# Identify the last recorded follow-up day for each participant.
+# The second dataset identifies participants whose recorded follow-up
+# ends before the prespecified 336-day threshold.
+
+data_max_fu <- data %>%
+  group_by(patid) %>%
+  filter(fu_day == max(fu_day, na.rm = TRUE)) %>%
+  ungroup()
+
+
+data_max_fu_check <- data %>%
+  group_by(patid) %>%
+  filter(max(fu_day, na.rm = TRUE) < 336) %>%
+  filter(fu_day == max(fu_day, na.rm = TRUE)) %>%
+  ungroup()
+```
+
+
+# Hospitalisation and oral corticosteroid use at baseline and follow-up
+
+
+```{r}
+# Hospitalisation and oral corticosteroid use at baseline and follow-up
+# Select the variables required to assess hospitalisations, emergency
+# department visits, intensive care admissions, and corticosteroid use.
+# The source dataset is in wide format, with follow-up variables
+# represented by separate columns.
+
+data_HCU <- data_final_wide %>%
+  select(
+    1:6,
+    starts_with("H12pred_freq"),
+    starts_with("H12hospitalization_freqN"),
+    starts_with("H12hospitalization_days"),
+    starts_with("H12ER_visit"),
+    starts_with("H12ic_freqN"),
+    starts_with("H12ic_days"),
+    starts_with("HCUhospitalization_frqN"),
+    starts_with("HCUhospitalization_days"),
+    starts_with("HCUER_visit"),
+    starts_with("HCUic_frqN"),
+    starts_with("HCUic_days"),
+    starts_with("STRpred_main"),
+    starts_with("HCUpred_main_mgN"),
+    starts_with("HCUpred_frq"),
+    starts_with("HCUpred_mainN")
+  )
+
+# Retain a secondary participant identifier for subsequent data processing.
+data_HCU$patid2 <- data_HCU$patid
+
+# Check participant coverage in the selected dataset.
+# The participant-level results are not printed in this public script.
+length(unique(data_HCU$patid))
+setdiff(all_participants, data_HCU$patid)
+```
+
+
+```{r}
+# Export the selected hospitalisation and corticosteroid dataset.
+# This file contains participant-level data and must not be committed
+# to the public repository.
+
+library(openxlsx)
+
+write.xlsx(data_HCU, "data/processed/data_HCU.xlsx")
+
+# Load the prepared dataset from a local, authorised copy.
+# The source data are not distributed with this repository.
+data_HCU <- read.xlsx("data/processed/data_HCU.xlsx", sheet = 1)
+```
+
+
+# Exacerbation questionnaire data
+
+```{r}
+# Exacerbation questionnaire data
+# Retain records corresponding to exacerbation (EXAC) questionnaires.
+# These records are used to derive exacerbations from reported
+# oral corticosteroid use and hospitalisation-related information.
+
+data_EXAC <- data %>%
+  filter(type == "EXAC")
+```
+
+
+```{r}
+# Select the variables required for exacerbation classification.
+# Retain the core variables and the columns whose names begin with "EXA".
+
+data_EXAC <- data_EXAC[, c(
+  1:15, 528,
+  grep("^EXA", names(data_EXAC))
+)]
+
+# Retain a secondary participant identifier for subsequent processing.
+data_EXAC$patid2 <- data_EXAC$patid
+
+# Check participant coverage in the exacerbation dataset.
+length(unique(data_EXAC$patid))
+setdiff(all_participants, data_EXAC$patid)
+```
+
+
+```{r}
+# Assign exacerbation questionnaires to follow-up periods.
+# Follow-up time is expressed in days. The boundaries below define
+# the periods corresponding to baseline and 3-, 6-, 9-, and 12-month
+# assessments.
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    EXAC_month = case_when(
+      type == "EXAC" & fu_day <= 1.5 * 28 ~ "0 months",
+      type == "EXAC" & fu_day > 1.5 * 28 & fu_day <= 4.5 * 28 ~ "3 months",
+      type == "EXAC" & fu_day > 4.5 * 28 & fu_day <= 7.5 * 28 ~ "6 months",
+      type == "EXAC" & fu_day > 7.5 * 28 & fu_day <= 10.5 * 28 ~ "9 months",
+      type == "EXAC" & fu_day > 10.5 * 28 & fu_day <= 16 * 28 ~ "12 months"
+    ),
+    .after = "type"
+  )
+
+# Inspect the distribution of questionnaires across follow-up periods.
+table(data_EXAC$EXAC_month)
+```
+
+
+```{r}
+# Load the cleaned maintenance-dose dataset.
+# This input must be supplied locally; it is not included in the
+# public repository.
+
+library(readxl)
+
+data_HCUclean <- read_excel(
+  "data/input/HCU_data_cleaned.xlsx"
+)
+
+# Merge maintenance oral corticosteroid doses at baseline and follow-up
+# into the exacerbation questionnaire dataset.
+# The merge uses the shared name variable.
+
+data_EXAC <- data_EXAC %>%
+  left_join(
+    data_HCUclean %>%
+      select(
+        name,
+        STRpred_main_mgN,
+        HCU3_pred,
+        HCU6_pred,
+        HCU9_pred,
+        HCU12_pred
+      ),
+    by = "name"
+  )
+```
+
+
+```{r}
+# Data quality corrections
+# Before classifying exacerbations, apply the documented data quality
+# corrections to the source data in the authorised analysis environment.
+#
+# Participant-specific identifiers and correction values are intentionally
+# omitted from this public script. The analysis assumes that the required
+# corrections have been applied and checked before proceeding.
+#
+# The correction log should be maintained separately in accordance with
+# the study's data governance and reproducibility procedures.
+```
+
+
+```{r}
+# STEP 1: Exacerbation classification based on oral corticosteroid use
+# without an increase above maintenance treatment
+#
+# Define binary indicators for corticosteroid use lasting at least
+# 3 days within a week or across consecutive questionnaires.
+#
+# Coding:
+# 0 = criterion not met
+# 1 = criterion met
+#
+# The classification is performed separately for each follow-up period.
+# Maintenance corticosteroid use is accounted for using the maintenance
+# dose information available for the corresponding period.
+
+# Baseline period
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_use_3days_0months =
+      case_when(
+        EXAC_month == "0 months" & !is.na(STRpred_main_mgN) ~ 0,
+        EXAC_month == "0 months" & EXAtotal_days_pred_weekly >= 3 ~ 1,
+        EXAC_month == "0 months" & patid == lag(patid) &
+          days_diff <= 13 &
+          (lag(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        EXAC_month == "0 months" & patid == lead(patid) &
+          days_diff <= 13 &
+          (lead(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(data_EXAC$pred_use_3days_0months)
+
+# 3-month follow-up
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_use_3days_3months =
+      case_when(
+        EXAC_month == "3 months" & !is.na(HCU3_pred) ~ 0,
+        EXAC_month == "3 months" & EXAtotal_days_pred_weekly >= 3 ~ 1,
+        EXAC_month == "3 months" & patid == lag(patid) &
+          days_diff <= 13 &
+          (lag(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        EXAC_month == "3 months" & patid == lead(patid) &
+          days_diff <= 13 &
+          (lead(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(data_EXAC$pred_use_3days_3months)
+
+# 6-month follow-up
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_use_3days_6months =
+      case_when(
+        EXAC_month == "6 months" & !is.na(HCU6_pred) ~ 0,
+        EXAC_month == "6 months" & EXAtotal_days_pred_weekly >= 3 ~ 1,
+        EXAC_month == "6 months" & patid == lag(patid) &
+          days_diff <= 13 &
+          (lag(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        EXAC_month == "6 months" & patid == lead(patid) &
+          days_diff <= 13 &
+          (lead(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(data_EXAC$pred_use_3days_6months)
+
+# 9-month follow-up
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_use_3days_9months =
+      case_when(
+        EXAC_month == "9 months" & !is.na(HCU9_pred) ~ 0,
+        EXAC_month == "9 months" & EXAtotal_days_pred_weekly >= 3 ~ 1,
+        EXAC_month == "9 months" & patid == lag(patid) &
+          days_diff <= 13 &
+          (lag(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        EXAC_month == "9 months" & patid == lead(patid) &
+          days_diff <= 13 &
+          (lead(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(data_EXAC$pred_use_3days_9months)
+
+# 12-month follow-up
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_use_3days_12months =
+      case_when(
+        EXAC_month == "12 months" & !is.na(HCU12_pred) ~ 0,
+        EXAC_month == "12 months" & EXAtotal_days_pred_weekly >= 3 ~ 1,
+        EXAC_month == "12 months" & patid == lag(patid) &
+          days_diff <= 13 &
+          (lag(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        EXAC_month == "12 months" & patid == lead(patid) &
+          days_diff <= 13 &
+          (lead(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(data_EXAC$pred_use_3days_12months)
+
+# Combine the follow-up-specific indicators into one binary variable.
+# A value of 1 indicates that the corticosteroid-use criterion was met
+# in at least one follow-up period.
+
+data_EXAC$pred_use_3days_all <- ifelse(
+  data_EXAC$pred_use_3days_0months == 1 |
+    data_EXAC$pred_use_3days_3months == 1 |
+    data_EXAC$pred_use_3days_6months == 1 |
+    data_EXAC$pred_use_3days_9months == 1 |
+    data_EXAC$pred_use_3days_12months == 1,
+  1, 0
+)
+
+table(data_EXAC$pred_use_3days_all)
+
+
+# Identify distinct exacerbation episodes.
+# Consecutive positive records within the specified time window are
+# treated as one episode. Only the first positive record in a sequence
+# is retained as an exacerbation indicator.
+
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  arrange(desc(datequest2)) %>%
+  mutate(
+    pred_use_3days_1exa = ifelse(
+      lead(pred_use_3days_all, default = 0) == 1 &
+        days_diff <= 13,
+      0,
+      pred_use_3days_all
+    ),
+    .after = pred_use_3days_all
+  )
+
+# Restore chronological ordering after identifying episode starts.
+data_EXAC <- data_EXAC %>%
+  arrange(patid, type, datequest2)
+
+table(data_EXAC$pred_use_3days_1exa)
+
+# Check for consecutive positive episode indicators.
+# This diagnostic can help identify records that may require review.
+subset_lead <- data_EXAC %>%
+  filter(
+    pred_use_3days_1exa == 1 &
+      lead(pred_use_3days_1exa, default = 0) == 1
+  )
+
+# Create a review dataset containing the variables relevant to
+# corticosteroid use and exacerbation classification.
+# Inspect this dataset in the authorised analysis environment.
+check <- data_EXAC %>%
+  select(
+    1:20,
+    grep("^EXA", names(data_EXAC)),
+    grep("pred", names(data_EXAC))
+  )
+```
+
+
+
+```{r}
+# STEP 2: Exacerbation classification based on an increase in
+# systemic corticosteroid dose above maintenance treatment
+#
+# Identify records where the reported daily corticosteroid dose exceeds
+# the maintenance dose for the corresponding follow-up period.
+# A subsequent indicator identifies use meeting the duration criterion
+# of at least 3 days within a week or across consecutive questionnaires.
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_higher_YN = case_when(
+      EXAC_month == "0 months" &
+        EXAtotal_mili_pred_perday > STRpred_main_mgN ~ 1,
+      EXAC_month == "3 months" &
+        EXAtotal_mili_pred_perday > HCU3_pred ~ 1,
+      EXAC_month == "6 months" &
+        EXAtotal_mili_pred_perday > HCU6_pred ~ 1,
+      EXAC_month == "9 months" &
+        EXAtotal_mili_pred_perday > HCU9_pred ~ 1,
+      EXAC_month == "12 months" &
+        EXAtotal_mili_pred_perday > HCU12_pred ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+table(data_EXAC$pred_higher_YN)
+
+# Determine whether the increase above maintenance treatment meets
+# the corticosteroid-duration criterion.
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    pred_higher_3days =
+      case_when(
+        pred_higher_YN == 1 &
+          EXAtotal_days_pred_weekly >= 3 ~ 1,
+
+        patid == lag(patid) &
+          days_diff <= 13 &
+          (lag(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 &
+          lag(pred_higher_YN, default = 0) == 1 &
+          pred_higher_YN == 1 ~ 1,
+
+        patid == lead(patid) &
+          days_diff <= 13 &
+          (lead(EXAtotal_days_pred_weekly, default = 0) +
+             EXAtotal_days_pred_weekly) >= 3 &
+          lead(pred_higher_YN, default = 0) == 1 &
+          pred_higher_YN == 1 ~ 1,
+
+        TRUE ~ 0
+      )
+  )
+
+table(data_EXAC$pred_higher_3days)
+
+
+# Identify distinct exacerbation episodes based on increased
+# corticosteroid use. Consecutive positive records within the specified
+# time window are treated as a single episode.
+
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  arrange(desc(datequest2)) %>%
+  mutate(
+    pred_higher_3days_1exa = ifelse(
+      lead(pred_higher_3days, default = 0) == 1 &
+        days_diff <= 13,
+      0,
+      pred_higher_3days
+    ),
+    .after = pred_higher_3days
+  )
+
+# Restore chronological ordering after identifying episode starts.
+data_EXAC <- data_EXAC %>%
+  arrange(patid, type, datequest2)
+
+table(data_EXAC$pred_higher_3days_1exa)
+
+# Check for consecutive positive episode indicators as a diagnostic.
+subset_lead_higher <- data_EXAC %>%
+  filter(
+    pred_higher_3days_1exa == 1 &
+      lead(pred_higher_3days_1exa, default = 0) == 1
+  )
+```
+
+
+
+```{r}
+# STEP 3: Hospitalisation-related exacerbation classification
+#
+# Identify records reporting a hospital visit or a specified category
+# of medication change. These records are then assessed alongside
+# corticosteroid-use indicators to identify hospitalisations that
+# may represent exacerbations.
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    hospi_YN = case_when(
+      EXAhospital_visit == 1 | EXAmed_change_weekly == 4 ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+table(data_EXAC$hospi_YN)
+
+
+# Classify a hospitalisation as a potential exacerbation when
+# corticosteroid use meeting either of the predefined criteria is
+# recorded in the same questionnaire or the subsequent questionnaire
+# within the specified time window.
+
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  arrange(patid, datequest2) %>%
+  mutate(
+    hospi_exa = if_else(
+      hospi_YN == 1 & (
+        pred_use_3days_all == 1 |
+          pred_higher_3days == 1 |
+          (
+            lead(pred_use_3days_all == 1 |
+                   pred_higher_3days == 1) &
+              lead(days_diff) <= 14
+          )
+      ),
+      1, 0
+    )
+  )
+
+table(data_EXAC$hospi_exa)
+
+
+# Identify distinct hospitalisation episodes.
+# Consecutive positive records within the specified time window are
+# treated as a single episode.
+
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  arrange(desc(datequest2)) %>%
+  mutate(
+    hospi_1exa = ifelse(
+      lead(hospi_exa, default = 0) == 1 &
+        days_diff <= 13,
+      0,
+      hospi_exa
+    ),
+    .after = hospi_exa
+  )
+
+# Restore chronological ordering after identifying episode starts.
+data_EXAC <- data_EXAC %>%
+  arrange(patid, type, datequest2)
+
+table(data_EXAC$hospi_1exa)
+
+
+# Identify records where multiple exacerbation indicators overlap.
+# These records require review to determine whether hospitalisation
+# and corticosteroid use represent the same exacerbation episode.
+
+overlap_exa <- rowSums(
+  data_EXAC[, c(
+    "pred_use_3days_1exa",
+    "pred_higher_3days_1exa",
+    "hospi_1exa"
+  )] == 1
+) >= 2
+
+overlap_exa_dataframe <- data_EXAC[overlap_exa, ]
+
+# Retain selected variables for reviewing overlapping indicators.
+overlap_exa_dataframeshort <- overlap_exa_dataframe %>%
+  select(1:35, 42, 45, 47)
+
+# Review overlapping records in the authorised analysis environment.
+# Hospitalisation and corticosteroid use associated with the same
+# episode should not be counted as separate exacerbations unless
+# supported by the study's event-classification rules.
+```
+
+
+
+```{r}
+# Quality checks for prolonged sequences of positive records
+#
+# Identify participants with at least five consecutive positive records
+# for either corticosteroid-use indicator. These sequences may represent
+# prolonged treatment or multiple records belonging to the same episode
+# and should be reviewed during data validation.
+
+# Function to detect runs of five or more consecutive values equal to 1.
+has_consec_5 <- function(x) {
+  r <- rle(x)
+  any(r$values == 1 & r$lengths >= 5)
+}
+
+# Identify participants with prolonged sequences of positive records
+# for the corticosteroid-use indicator without an increase above
+# maintenance treatment.
+
+patids_with_5_consec_burst <- data_EXAC %>%
+  group_by(patid) %>%
+  summarise(
+    has_run = has_consec_5(pred_use_3days_all),
+    .groups = "drop"
+  ) %>%
+  filter(has_run) %>%
+  pull(patid)
+
+# Identify participants with prolonged sequences of positive records
+# for the increased-maintenance-dose indicator.
+
+patids_with_5_consec_maintenance <- data_EXAC %>%
+  group_by(patid) %>%
+  summarise(
+    has_run = has_consec_5(pred_higher_3days),
+    .groups = "drop"
+  ) %>%
+  filter(has_run) %>%
+  pull(patid)
+```
+
+
+
+# Time-to-first-exacerbation variables
+
+```{r}
+# EXAC exacerbations: time-to-event variables
+#
+# Convert follow-up time from days to weeks and round to the nearest
+# whole week. These variables are used to describe the timing of
+# exacerbations during follow-up.
+
+data_EXAC <- data_EXAC %>%
+  mutate(fu_week = fu_day / 7)
+
+data_EXAC$fu_week <- round(data_EXAC$fu_week)
+```
+
+
+```{r}
+# Clinical review of exacerbation classification and timing
+#
+# The automatically derived exacerbation indicators and event dates were
+# reviewed against the study records. Some event classifications or
+# timings may require adjudication based on the study's predefined rules.
+#
+# Participant-specific adjudication decisions are intentionally omitted
+# from this public script. Apply the documented decisions to the data
+# in the authorised analysis environment before proceeding.
+```
+
+
+```{r}
+# Derive the date of each exacerbation identified by either of the
+# corticosteroid-based classification criteria.
+#
+# Hospitalisation-based events are not included in this time-to-event
+# definition.
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    date_exa = ifelse(
+      pred_use_3days_1exa == 1 |
+        pred_higher_3days_1exa == 1,
+      datequest2,
+      NA
+    )
+  )
+```
+
+
+```{r}
+# Identify the date of the first recorded exacerbation for each participant.
+# Participants without a recorded exacerbation retain a missing value.
+
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  mutate(
+    date_first_exa = ifelse(
+      !all(is.na(date_exa)) &
+        date_exa == min(date_exa, na.rm = TRUE),
+      date_exa,
+      NA
+    )
+  ) %>%
+  ungroup()
+```
+
+
+```{r}
+# Record the follow-up week of the first exacerbation and the follow-up
+# week of every recorded exacerbation, respectively.
+#
+# These variables are missing for records without a corresponding event.
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    first_exa_fu_week = ifelse(
+      !is.na(date_first_exa),
+      fu_week,
+      NA
+    )
+  )
+
+data_EXAC <- data_EXAC %>%
+  mutate(
+    all_exa_fu_week = ifelse(
+      !is.na(date_exa),
+      fu_week,
+      NA
+    )
+  )
+```
+
+
+```{r}
+# Calculate the total number of exacerbation events per participant.
+# An event is counted when either corticosteroid-based indicator equals 1.
+# The logical OR prevents the same record from being counted twice when
+# both indicators are positive.
+
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  mutate(
+    total_n_exa = sum(
+      (pred_higher_3days_1exa == 1 |
+         pred_use_3days_1exa == 1),
+      na.rm = TRUE
+    )
+  ) %>%
+  ungroup()
+```
+
+
+```{r}
+# Export the derived exacerbation dataset for quality checks.
+# The file contains participant-level data and must remain local.
+
+library(openxlsx)
+
+write.xlsx(
+  data_EXAC,
+  "data/processed/data_EXAC_exacerbations.xlsx"
+)
+
+# Load the prepared dataset from an authorised local copy, if required
+# for the subsequent analysis workflow.
+data_EXAC <- read.xlsx(
+  "data/processed/data_EXAC_exacerbations.xlsx",
+  sheet = 1
+)
+```
+
+
+# Participant-level time-to-event summary
+
+```{r}
+# Create a participant-level dataset with one row per participant.
+#
+# exa_n: total number of exacerbations during follow-up.
+# arm: randomised study group.
+# time: week of the first exacerbation for participants with an event;
+#       otherwise, the last recorded follow-up week.
+#
+# This dataset forms the basis for time-to-first-event analyses.
+
+data_summary_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  summarise(
+    exa_n = if (all(is.na(total_n_exa))) {
+      NA
+    } else {
+      first(na.omit(total_n_exa))
+    },
+    arm = if (all(is.na(arm))) {
+      NA
+    } else {
+      first(na.omit(arm))
+    },
+    time = if (all(is.na(first_exa_fu_week))) {
+      max(fu_week, na.rm = TRUE)
+    } else {
+      first(na.omit(first_exa_fu_week))
+    },
+    .groups = "drop"
+  )
+
+# Define event status for time-to-event analyses.
+# status = 1: at least one exacerbation was recorded.
+# status = 0: no exacerbation was recorded during follow-up.
+
+data_summary_EXAC <- data_summary_EXAC %>%
+  mutate(status = ifelse(exa_n > 0, 1, 0))
+```
+
+```{r}
+# Export the participant-level time-to-first-exacerbation summary
+# for data quality review.
+
+write.xlsx(
+  data_summary_EXAC,
+  "data/processed/time_to_first_exacerbation.xlsx"
+)
+```
+
+
+
+# Summary of exacerbation counts and follow-up
+
+```{r}
+# Summarise the number of exacerbations per participant, separately for
+# the two corticosteroid-based classification criteria.
+
+summary_table_exa <- data_EXAC %>%
+  group_by(patid) %>%
+  summarise(
+    N_pred_use_3days = sum(
+      pred_use_3days_1exa == 1,
+      na.rm = TRUE
+    ),
+    N_pred_higher_3days = sum(
+      pred_higher_3days_1exa == 1,
+      na.rm = TRUE
+    )
+  )
+
+# Count participants with no exacerbations identified by either
+# corticosteroid-based criterion.
+# Only the aggregate count is returned.
+
+summary_table_exa %>%
+  filter(
+    N_pred_use_3days == 0 &
+      N_pred_higher_3days == 0
+  ) %>%
+  nrow()
+
+# Count the number of exacerbation questionnaire records per participant.
+# This provides a simple measure of the amount of follow-up data available.
+
+row_counts <- data_EXAC %>%
+  group_by(patid) %>%
+  summarise(N_FU_weeks = n())
+
+# Combine exacerbation counts and questionnaire counts into one summary.
+
+summary_table_exa <- summary_table_exa %>%
+  left_join(row_counts, by = "patid")
+
+# Export the summary for internal quality checks.
+library(openxlsx)
+
+write.xlsx(
+  summary_table_exa,
+  "data/processed/summary_exacerbation_counts.xlsx"
+)
+
+```
+
+
+
+# Distribution of exacerbations during follow-up
+
+```{r}
+# Visualise the distribution of the recorded first-exacerbation week.
+# The histogram uses one-week bins.
+
+library(ggplot2)
+
+ggplot(data_EXAC, aes(x = first_exa_fu_week)) +
+  geom_histogram(
+    binwidth = 1,
+    color = "black",
+    fill = "lightblue"
+  )
+
+# Restrict the x-axis to the first 26 weeks of follow-up.
+
+ggplot(data_EXAC, aes(x = first_exa_fu_week)) +
+  geom_histogram(
+    binwidth = 1,
+    color = "black",
+    fill = "lightblue"
+  ) +
+  xlim(0, 26)
+```
+
+
+```{r}
+# Sensitivity/descriptive analysis in participants without loss to follow-up
+#
+# Define the analysis subset using a participant-level follow-up status
+# variable prepared in the authorised analysis environment.
+# The participant-specific exclusion list used in the original analysis
+# is intentionally omitted from this public script.
+#
+# Before running this section, ensure that follow_up_complete is a
+# participant-level variable coded 1 for participants meeting the
+# study's definition of complete follow-up and 0 otherwise.
+
+subset_EXAC_noLTFU <- subset(
+  data_EXAC,
+  follow_up_complete == 1
+)
+
+# Categorise the total number of exacerbations during 12-month follow-up.
+# The categories are 0-2, 3-4, and 5 or more events.
+
+subset_EXAC_noLTFU <- subset_EXAC_noLTFU %>%
+  mutate(
+    exa_cat = case_when(
+      total_n_exa <= 2 ~ "0-2",
+      total_n_exa == 3 ~ "3-4",
+      total_n_exa == 4 ~ "3-4",
+      total_n_exa >= 5 ~ ">=5"
+    )
+  )
+
+# Summarise exacerbation categories by study group.
+# Select one record per participant before generating the table.
+
+subset_EXAC_noLTFU %>%
+  group_by(patid) %>%
+  slice(1) %>%
+  ungroup() %>%
+  {
+    table(.$exa_cat, .$arm)
+  }
+
+# Summarise the number of participants in each exacerbation category.
+
+subset_EXAC_noLTFU %>%
+  group_by(patid) %>%
+  slice(1) %>%
+  ungroup() %>%
+  count(exa_cat)
+
+# Visualise the distribution of recorded exacerbation weeks
+# in the subset with complete follow-up.
+
+ggplot(
+  subset_EXAC_noLTFU,
+  aes(x = all_exa_fu_week)
+) +
+  geom_histogram(
+    binwidth = 1,
+    color = "black",
+    fill = "lightblue"
+  )
+```
