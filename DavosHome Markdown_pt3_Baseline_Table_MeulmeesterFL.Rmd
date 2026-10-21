@@ -1,0 +1,759 @@
+---
+title: "Davos@home Table 1 baseline characteristics of the study population"
+author: "Fleur L. Meulmeester, PhD Candidate Leiden, The Netherlands"
+date: "2026-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load data and required packages
+
+```{r}
+# Load required packages ---------------------------------------------------
+
+Packages <- c(
+  "dplyr", "tidyverse", "foreign", "lubridate",
+  "rio", "openxlsx", "haven", "table1"
+)
+
+# Install packages once if needed; package installation is not required
+# every time the analysis is run.
+# lapply(Packages, install.packages, character.only = TRUE)
+
+# Load packages
+lapply(Packages, library, character.only = TRUE)
+
+
+# Load analysis dataset ----------------------------------------------------
+# Place the input file in the project's data/processed/ directory.
+
+data_final_wide <- read.xlsx(
+  "data/processed/data_wide_format.xlsx",
+  sheet = 1
+)
+```
+
+
+# Baseline characteristics
+
+```{r}
+# Baseline characteristics ------------------------------------------------
+
+# Inspect the distribution of CIS-F total scores in the full sample
+hist(data_final_wide$CISF_totscore_t0)
+
+summary(data_final_wide$CISF_totscore_t0, na.rm = TRUE)
+sd(data_final_wide$CISF_totscore_t0, na.rm = TRUE)
+
+# Summarise CIS-F total scores in the control group (arm = 0)
+control <- subset(data_final_wide, arm == 0)
+
+summary(control$CISF_totscore_t0, na.rm = TRUE)
+sd(control$CISF_totscore_t0, na.rm = TRUE)
+
+# Summarise CIS-F total scores in the intervention group (arm = 1)
+intervention <- subset(data_final_wide, arm == 1)
+
+summary(intervention$CISF_totscore_t0, na.rm = TRUE)
+sd(intervention$CISF_totscore_t0, na.rm = TRUE)
+
+
+# Inspect distributions and missingness of continuous variables -----------
+
+# BMI
+hist(data_final_wide$BMI, breaks = 50)
+sum(is.na(data_final_wide$BMI))
+
+# Age
+hist(data_final_wide$Age, breaks = 50)
+sum(is.na(data_final_wide$Age))
+
+# Asthma control questionnaire score
+hist(data_final_wide$ACQscore, breaks = 50)
+sum(is.na(data_final_wide$ACQscore))
+
+# Mini Asthma Quality of Life Questionnaire total score
+hist(data_final_wide$mAQLQtot, breaks = 50)
+sum(is.na(data_final_wide$mAQLQtot))
+
+# Sinonasal Outcome Test-22 score
+hist(data_final_wide$SNOT_22, breaks = 50)
+sum(is.na(data_final_wide$SNOT_22))
+
+# FEV1 at discharge
+hist(data_final_wide$OntslagFEV1voorSABApp, breaks = 50)
+sum(is.na(data_final_wide$OntslagFEV1voorSABApp))
+
+# Fractional exhaled nitric oxide (FeNO)
+hist(data_final_wide$FeNOT1, breaks = 50)
+sum(is.na(data_final_wide$FeNOT1))
+
+# Total IgE
+hist(data_final_wide$IgET1_replaced, breaks = 50)
+sum(is.na(data_final_wide$IgET1))
+
+# Blood eosinophil count
+hist(data_final_wide$EosT1, breaks = 50)
+sum(is.na(data_final_wide$EosT1))
+
+# Maintenance oral corticosteroid (mOCS) dose among users
+hist(
+  data_final_wide$pred_mg_T1[data_final_wide$MOCS_T1_dich == 1],
+  breaks = 50
+)
+sum(is.na(
+  data_final_wide$pred_mg_T1[data_final_wide$MOCS_T1_dich == 1]
+))
+```
+
+
+```{r}
+# Functions for descriptive tables ----------------------------------------
+
+# Format continuous variables as mean (SD), median (IQR), and range.
+my.render.cont <- function(x) {
+  with(
+    stats.apply.rounding(stats.default(x, ), digits = 3),
+    c(
+      "",
+      "Mean (SD)" = sprintf("%s (&plusmn; %s)", MEAN, SD),
+      "Median (IQR)" = sprintf("%s (%s - %s)", MEDIAN, Q1, Q3),
+      "Range" = sprintf("%s - %s", MIN, MAX)
+    )
+  )
+}
+
+# Format categorical variables as counts and percentages.
+my.render.cat <- function(x) {
+  c(
+    "",
+    sapply(
+      stats.default(x),
+      function(y) with(y, sprintf("%d (%0.0f%%)", FREQ, PCT))
+    )
+  )
+}
+```
+
+
+```{r}
+# Convert categorical variables to factors -------------------------------
+
+data_final_wide <- data_final_wide %>%
+  mutate(across(
+    c(
+      sex1woman,
+      onset_late,
+      eos_high,
+      allergic,
+      sleep_apneu,
+      nasal_polyps,
+      chron_rs,
+      allerg_rhinocon,
+      atopic_derm,
+      vocal_chord,
+      hyperventilation,
+      depr,
+      gerd,
+      freq_infec,
+      STRomaluzimab_t0,
+      STRmepolizumab_t0,
+      STRbenralizumab_t0,
+      STRreslizumab_t0,
+      STRdupilumab_t0,
+      STReducation_t0,
+      STRinternet_experience_t0,
+      STRallergies_none_t0,
+      STRhdm_t0,
+      STRcat_t0,
+      STRdog_t0,
+      STRtree_t0,
+      STRgrass_t0,
+      STRanimals_t0,
+      STRpeanuts_nuts_t0,
+      STRarthritis_t0,
+      STRsens_cig_t0,
+      STRsens_perfume_t0,
+      STRsens_vacuum_t0,
+      STRsens_coldair_t0,
+      STRsens_nsaids_t0,
+      CRSwNP,
+      CRSsNP,
+      arm
+    ),
+    as.factor
+  ))
+```
+
+
+```{r}
+# Generate baseline characteristics table -------------------------------
+
+table1 <- table1(
+  ~ Age +
+    BMI +
+    sex1woman +
+    ACQscore +
+    mAQLQtot +
+    SNOT_22 +
+    onset_late +
+    eos_high +
+    allergic +
+    H12pred_freq_t0 +
+    OntslagFEV1voorSABApp +
+    FeNOT1 +
+    IgET1_replaced +
+    EosT1 +
+    sleep_apneu +
+    nasal_polyps +
+    chron_rs +
+    CRSwNP +
+    CRSsNP +
+    allerg_rhinocon +
+    atopic_derm +
+    vocal_chord +
+    hyperventilation +
+    depr +
+    gerd +
+    freq_infec +
+    STRomaluzimab_t0 +
+    STRmepolizumab_t0 +
+    STRbenralizumab_t0 +
+    STRreslizumab_t0 +
+    STRdupilumab_t0 +
+    STReducation_t0 +
+    STRinternet_experience_t0 +
+    STRallergies_none_t0 +
+    STRhdm_t0 +
+    STRcat_t0 +
+    STRdog_t0 +
+    STRtree_t0 +
+    STRgrass_t0 +
+    STRanimals_t0 +
+    STRpeanuts_nuts_t0 +
+    STRarthritis_t0 +
+    STRsens_cig_t0 +
+    STRsens_perfume_t0 +
+    STRsens_vacuum_t0 +
+    STRsens_coldair_t0 +
+    STRsens_nsaids_t0 | arm,
+  overall = c(left = "Total"),
+  data = data_final_wide,
+  render.continuous = my.render.cont,
+  render.categorical = my.render.cat
+)
+
+table1
+```
+
+
+
+# Maintenance oral corticosteroids, biologics, and comorbidities
+
+```{r}
+# Maintenance oral corticosteroid use -------------------------------------
+
+# Restrict dose summaries to participants recorded as maintenance OCS users.
+subset_mOCS <- subset(data_final_wide, MOCS_T1_dich == 1)
+
+# Number of maintenance OCS users by randomised group
+table(subset_mOCS$arm)
+
+# Maintenance OCS dose (mg/day): overall and by group
+summary(subset_mOCS$pred_mg_T1)
+summary(subset_mOCS$pred_mg_T1[subset_mOCS$arm == 0])
+summary(subset_mOCS$pred_mg_T1[subset_mOCS$arm == 1])
+
+
+# Maintenance prednisone use at baseline -------------------------------
+
+# STRvar941_t0 asks whether the participant currently uses maintenance
+# prednisone.
+table(data_final_wide$STRvar941_t0)
+table(data_final_wide$STRvar941_t0, data_final_wide$arm)
+
+
+# Biologic use at baseline -----------------------------------------------
+
+# Overall reported biologic use
+table(data_final_wide$H12biological_use_t0)
+
+# Reported absence of biologic use
+table(data_final_wide$STRbiological_none_t0)
+
+# Use of individual biologics
+table(data_final_wide$STRomaluzimab_t0)
+table(data_final_wide$STRbenralizumab_t0)
+table(data_final_wide$STRmepolizumab_t0)
+table(data_final_wide$STRreslizumab_t0)
+table(data_final_wide$STRdupilumab_t0)
+
+# Biologic use by randomised group
+table(
+  data_final_wide$STRbiological_none_t0,
+  data_final_wide$arm
+)
+```
+
+
+```{r}
+# Number of comorbidities -------------------------------------------------
+
+# Convert comorbidity indicators to integer values for summation.
+data_final_wide <- data_final_wide %>%
+  mutate(across(
+    c(
+      sleep_apneu,
+      nasal_polyps,
+      chron_rs,
+      allerg_rhinocon,
+      atopic_derm,
+      vocal_chord,
+      hyperventilation,
+      depr,
+      gerd,
+      freq_infec
+    ),
+    ~ as.integer(as.character(.))
+  ))
+
+# Calculate the number of recorded comorbidities for each participant.
+# Note: the variables included here follow the original analysis code.
+data_final_wide <- data_final_wide %>%
+  mutate(
+    comor_n = rowSums(
+      dplyr::select(
+        .,
+        sleep_apneu,
+        nasal_polyps,
+        chron_rs,
+        allerg_rhinocon,
+        atopic_derm,
+        vocal_chord,
+        hyperventilation,
+        depr,
+        gerd,
+        freq_infec
+      ),
+      na.rm = TRUE
+    )
+  )
+
+# Inspect the distribution of comorbidity counts
+hist(data_final_wide$comor_n, breaks = 50)
+
+# Summarise the number of comorbidities by randomised group
+table1_comor <- table1(
+  ~ comor_n | arm,
+  overall = c(left = "Total"),
+  data = data_final_wide,
+  render.continuous = my.render.cont,
+  render.categorical = my.render.cat
+)
+
+table1_comor
+```
+
+
+
+# Work productivity and activity impairment (WPAI)
+
+```{r}
+# Work Productivity and Activity Impairment (WPAI) ------------------------
+
+# Number of participants reporting paid work at baseline, overall and
+# stratified by randomised group.
+table(data_final_wide$H12paid_work_t0)
+table(data_final_wide$H12paid_work_t0, data_final_wide$arm)
+
+
+# Restrict WPAI calculations to participants reporting paid work.
+# Retain the randomised group and the H12 questionnaire variables.
+data_working <- subset(data_final_wide, H12paid_work_t0 == "Ja")
+
+data_working <- data_working %>%
+  select(patid, arm, starts_with("H12"))
+
+
+# Convert questionnaire variables used in the calculations to numeric.
+vars_to_numeric <- c(
+  "H12hours_work_t0",
+  "H12hours_absence_asthma_t0",
+  "H12hours_absence_other_t0",
+  "H12actual_working_hours_t0",
+  "H12asthma_productivity_work_t0",
+  "H12asthma_productivity_other_t0"
+)
+
+for (v in vars_to_numeric) {
+  data_working[[v]] <- as.numeric(data_working[[v]])
+}
+
+
+# Cap reported actual working hours at the number of hours the participant
+# was scheduled to work, to avoid actual hours exceeding scheduled hours.
+data_working$H12actual_working_hours_t0 <- ifelse(
+  data_working$H12actual_working_hours_t0 >
+    data_working$H12hours_work_t0,
+  data_working$H12hours_work_t0,
+  data_working$H12actual_working_hours_t0
+)
+
+
+# Calculate working hours after absence ----------------------------------
+
+# Scheduled hours minus hours missed due to asthma or other reasons.
+data_working$actual_workingh_t0_computed <-
+  data_working$H12hours_work_t0 -
+  (
+    data_working$H12hours_absence_asthma_t0 +
+      data_working$H12hours_absence_other_t0
+  )
+
+# Set negative calculated working hours to zero.
+data_working$actual_workingh_t0_computed <- ifelse(
+  data_working$actual_workingh_t0_computed < 0,
+  0,
+  data_working$actual_workingh_t0_computed
+)
+
+
+# Absenteeism -------------------------------------------------------------
+
+# Percentage of scheduled work hours missed due to asthma.
+# Formula: hours missed due to asthma / scheduled work hours.
+data_working$absent <- with(
+  data_working,
+  H12hours_absence_asthma_t0 / H12hours_work_t0
+)
+
+data_working$absent_perc <- data_working$absent * 100
+
+
+# Presenteeism ------------------------------------------------------------
+
+# Self-reported impairment while working due to asthma, on a 0-10 scale,
+# rescaled to a proportion.
+data_working$present <- with(
+  data_working,
+  H12asthma_productivity_work_t0 / 10
+)
+
+# Replace missing presenteeism values with zero, following the original
+# analysis approach.
+data_working <- data_working %>%
+  mutate(
+    present_computed = ifelse(is.na(present), 0, present)
+  )
+
+# Set presenteeism to zero when no working hours remain after absences.
+data_working <- data_working %>%
+  mutate(
+    present_computed = ifelse(
+      actual_workingh_t0_computed == 0,
+      0,
+      present_computed
+    )
+  )
+
+data_working$present_computed_perc <- data_working$present_computed * 100
+
+
+# Overall work impairment -------------------------------------------------
+
+# Combine absenteeism and presenteeism into overall work impairment.
+# Formula: absenteeism + (1 - absenteeism) * presenteeism.
+data_working <- data_working %>%
+  mutate(
+    overall_work_impairment_perc =
+      (absent + ((1 - absent) * present_computed)) * 100
+  )
+
+
+# Activity impairment -----------------------------------------------------
+
+# Self-reported impairment in activities outside work due to asthma,
+# rescaled from a 0-10 scale to a percentage.
+data_working$activity_impairment_perc <- with(
+  data_working,
+  (H12asthma_productivity_other_t0 / 10) * 100
+)
+
+
+# Summarise WPAI outcomes by randomised group -----------------------------
+
+table_wpai <- table1(
+  ~ absent_perc +
+    present_computed_perc +
+    overall_work_impairment_perc +
+    activity_impairment_perc | arm,
+  overall = c(left = "Total"),
+  data = data_working,
+  render.continuous = my.render.cont,
+  render.categorical = my.render.cat
+)
+
+table_wpai
+
+# Inspect the distribution of overall work impairment
+hist(data_working$overall_work_impairment_perc, breaks = 20)
+
+
+# Summarise presenteeism among participants with a value above zero --------
+
+present <- subset(data_working, present_computed_perc > 0)
+
+# Number of participants with presenteeism, by randomised group
+table(present$arm)
+
+# Overall distribution
+summary(present$present_computed_perc)
+
+# Control group (arm = 0)
+present_ct <- subset(present, arm == 0)
+summary(present_ct$present_computed_perc)
+
+# Intervention group (arm = 1)
+present_iv <- subset(present, arm == 1)
+summary(present_iv$present_computed_perc)
+```
+
+
+
+# Hospital Anxiety and Depression Scale (HADS)
+
+```{r}
+# Hospital Anxiety and Depression Scale (HADS) ----------------------------
+# Extract HADS items, randomised group, and participant identifier.
+# The participant identifier is used only for internal data handling and
+# should not be included in any publicly shared participant-level output.
+
+data_HADS <- select(
+  data_final_wide,
+  c("patid", "arm", starts_with("HADS"))
+)
+
+
+# Recode HADS item responses to numerical scores --------------------------
+# HADS-A consists of the odd-numbered items; HADS-D consists of the
+# even-numbered items. The response mappings below follow the original
+# analysis code.
+
+# HADS-A item 1
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS1_t0_num = case_when(
+      HADS1_t0 == "Meestal" ~ 3,
+      HADS1_t0 == "Vaak" ~ 2,
+      HADS1_t0 == "Af en toe, soms" ~ 1,
+      HADS1_t0 == "Helemaal niet" ~ 0
+    ),
+    .after = HADS1_t0
+  )
+
+# HADS-D item 2
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS2_t0_num = case_when(
+      HADS2_t0 == "zeker zo veel" ~ 0,
+      HADS2_t0 == "wat minder" ~ 1,
+      HADS2_t0 == "duidelijk minder" ~ 2,
+      HADS2_t0 == "nauwelijks nog" ~ 3
+    ),
+    .after = HADS2_t0
+  )
+
+# HADS-A item 3
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS3_t0_num = case_when(
+      HADS3_t0 == "heel zeker en vrij erg" ~ 3,
+      HADS3_t0 == "ja, maar niet zo erg" ~ 2,
+      HADS3_t0 == "een beetje, maar ik maak me er geen zorgen over" ~ 1,
+      HADS3_t0 == "helemaal niet" ~ 0
+    ),
+    .after = HADS3_t0
+  )
+
+# HADS-D item 4
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS4_t0_num = case_when(
+      HADS4_t0 == "net zoveel als vroeger" ~ 0,
+      HADS4_t0 == "nu wat minder" ~ 1,
+      HADS4_t0 == "nu duidelijk minder" ~ 2,
+      HADS4_t0 == "helemaal niet meer" ~ 3
+    ),
+    .after = HADS4_t0
+  )
+
+# HADS-A item 5
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS5_t0_num = case_when(
+      HADS5_t0 == "heel erg vaak" ~ 3,
+      HADS5_t0 == "vaak" ~ 2,
+      HADS5_t0 == "niet zo vaak" ~ 1,
+      HADS5_t0 == "heel soms" ~ 0
+    ),
+    .after = HADS5_t0
+  )
+
+# HADS-D item 6
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS6_t0_num = case_when(
+      HADS6_t0 == "meestal" ~ 0,
+      HADS6_t0 == "soms" ~ 1,
+      HADS6_t0 == "niet vaak" ~ 2,
+      HADS6_t0 == "helemaal niet" ~ 3
+    ),
+    .after = HADS6_t0
+  )
+
+# HADS-A item 7
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS7_t0_num = case_when(
+      HADS7_t0 == "helemaal niet" ~ 3,
+      HADS7_t0 == "niet vaak" ~ 2,
+      HADS7_t0 == "meestal" ~ 1,
+      HADS7_t0 == "zeker" ~ 0
+    ),
+    .after = HADS7_t0
+  )
+
+# HADS-D item 8
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS8_t0_num = case_when(
+      HADS8_t0 == "helemaal niet" ~ 0,
+      HADS8_t0 == "soms" ~ 1,
+      HADS8_t0 == "heel vaak" ~ 2,
+      HADS8_t0 == "bijna altijd" ~ 3
+    ),
+    .after = HADS8_t0
+  )
+
+# HADS-A item 9
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS9_t0_num = case_when(
+      HADS9_t0 == "heel vaak" ~ 3,
+      HADS9_t0 == "vrij vaak" ~ 2,
+      HADS9_t0 == "soms" ~ 1,
+      HADS9_t0 == "helemaal niet" ~ 0
+    ),
+    .after = HADS9_t0
+  )
+
+# HADS-D item 10
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS10_t0_num = case_when(
+      HADS10_t0 == "evenveel interesse als voorheen" ~ 0,
+      HADS10_t0 == "mogelijk wat minder" ~ 1,
+      HADS10_t0 == "niet meer zoveel als ik zou moeten" ~ 2,
+      HADS10_t0 == "zeker" ~ 3
+    ),
+    .after = HADS10_t0
+  )
+
+# HADS-A item 11
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS11_t0_num = case_when(
+      HADS11_t0 == "heel erg" ~ 3,
+      HADS11_t0 == "tamelijk veel" ~ 2,
+      HADS11_t0 == "niet erg veel" ~ 1,
+      HADS11_t0 == "helemaal niet" ~ 0
+    ),
+    .after = HADS11_t0
+  )
+
+# HADS-D item 12
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS12_t0_num = case_when(
+      HADS12_t0 == "net zoveel als vroeger" ~ 0,
+      HADS12_t0 == "een beetje minder dan vroeger" ~ 1,
+      HADS12_t0 == "zeker minder dan vroeger" ~ 2,
+      HADS12_t0 == "bijna nooit" ~ 3
+    ),
+    .after = HADS12_t0
+  )
+
+# HADS-A item 13
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS13_t0_num = case_when(
+      HADS13_t0 == "zeer vaak" ~ 3,
+      HADS13_t0 == "tamelijk vaak" ~ 2,
+      HADS13_t0 == "niet erg vaak" ~ 1,
+      HADS13_t0 == "helemaal niet" ~ 0
+    ),
+    .after = HADS13_t0
+  )
+
+# HADS-D item 14
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS14_t0_num = case_when(
+      HADS14_t0 == "vaak" ~ 0,
+      HADS14_t0 == "soms" ~ 1,
+      HADS14_t0 == "niet vaak" ~ 2,
+      HADS14_t0 == "heel zelden" ~ 3
+    ),
+    .after = HADS14_t0
+  )
+
+
+# Calculate HADS subscale scores -----------------------------------------
+
+# Sum the seven anxiety items and the seven depression items separately.
+data_HADS <- data_HADS %>%
+  mutate(
+    HADS_A_t0 = HADS1_t0_num + HADS3_t0_num + HADS5_t0_num +
+      HADS7_t0_num + HADS9_t0_num + HADS11_t0_num +
+      HADS13_t0_num,
+
+    HADS_D_t0 = HADS2_t0_num + HADS4_t0_num + HADS6_t0_num +
+      HADS8_t0_num + HADS10_t0_num + HADS12_t0_num +
+      HADS14_t0_num
+  )
+
+
+# Summarise HADS scores at or above 11 -----------------------------------
+# Calculate the number and percentage of participants with a HADS-A or
+# HADS-D score >= 11, overall and by randomised group.
+
+summary_table <- data_HADS %>%
+  summarise(
+    total_n = n(),
+    n_HADS_A_11plus = sum(HADS_A_t0 >= 11, na.rm = TRUE),
+    n_HADS_D_11plus = sum(HADS_D_t0 >= 11, na.rm = TRUE),
+    pct_HADS_A_11plus = 100 * n_HADS_A_11plus / total_n,
+    pct_HADS_D_11plus = 100 * n_HADS_D_11plus / total_n
+  )
+
+summary_table
+
+
+# Repeat the summary by randomised group
+summary_by_arm <- data_HADS %>%
+  group_by(arm) %>%
+  summarise(
+    total_n = n(),
+    n_HADS_A_11plus = sum(HADS_A_t0 >= 11, na.rm = TRUE),
+    n_HADS_D_11plus = sum(HADS_D_t0 >= 11, na.rm = TRUE),
+    pct_HADS_A_11plus = 100 * n_HADS_A_11plus / total_n,
+    pct_HADS_D_11plus = 100 * n_HADS_D_11plus / total_n
+  )
+
+summary_by_arm
+```
+
