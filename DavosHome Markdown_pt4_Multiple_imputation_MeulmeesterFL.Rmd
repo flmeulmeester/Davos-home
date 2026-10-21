@@ -1,0 +1,1037 @@
+---
+title: "Davos@home Multiple imputation of the primary outcome, time-to-first-severe-exacerbation with risk score imputation, and secondary outcomes with MICE"
+author: "Fleur L. Meulmeester, PhD Candidate Leiden, The Netherlands"
+date: "2026-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load the required packages and data
+
+```{r}
+# Load the necessary packages and data ------------------------------------
+
+# Define the packages required for data import, data manipulation,
+# statistical modelling, estimated marginal means, and multiple imputation.
+# Install any missing packages separately if needed.
+
+# install.packages("emmeans")
+# install.packages("lme4")
+# install.packages("nlme")
+# install.packages("lmerTest")
+
+Packages <- c(
+  "readstata13",
+  "readxl",
+  "dplyr",
+  "foreign",
+  "lubridate",
+  "openxlsx",
+  "haven",
+  "emmeans",
+  "lme4",
+  "nlme",
+  "lmerTest",
+  "ggplot2",
+  "tidyr",
+  "mice",
+  "miceadds",
+  "micemd"
+)
+
+# Load all required packages.
+# Packages must already be installed in the R environment.
+lapply(Packages, library, character.only = TRUE)
+```
+
+
+
+```{r}
+# Import the analysis datasets -------------------------------------------
+
+# Main wide-format dataset containing participant characteristics,
+# clinical variables, and questionnaire data.
+# The Excel file is not included in the public repository because it
+# contains participant-level study data.
+
+data_final_wide <- openxlsx::read.xlsx(
+  "data/processed/data_wide_format.xlsx",
+  sheet = 1
+)
+
+
+# Health care utilisation (HCU) dataset ----------------------------------
+# Contains variables related to health care utilisation, including H12
+# questionnaire data and HCU information.
+
+data_HCU <- read.xlsx(
+  "data/processed/data_HCU.xlsx",
+  sheet = 1
+)
+
+
+# Time-to-event dataset ---------------------------------------------------
+# Contains data used for the time-to-first-exacerbation analysis.
+
+data_timetoevent <- read.xlsx(
+  "data/processed/data_timetoevent.xlsx",
+  sheet = 1
+)
+
+# Convert participant identifiers and treatment-group assignments to
+# character variables to ensure consistent data types for subsequent
+# data preparation and analyses.
+data_timetoevent$patid <- as.character(data_timetoevent$patid)
+data_timetoevent$arm <- as.character(data_timetoevent$arm)
+```
+
+
+# 1. Prepare the dataset for multiple imputation of secondary outcomes
+
+```{r}
+# Multiple imputation of secondary outcomes --------------------------------
+
+# Select baseline characteristics, clinical variables, questionnaire
+# scores, and follow-up measures needed for the imputation models.
+data_wide_imp <- dplyr::select(
+  data_final_wide,
+  "patid",
+  "arm",
+  "STRgender_t0",
+  "STRage_t0",
+  "STRvar941_t0",
+  "STRpred_main_mgN_t0",
+  "STRbiological_none_t0",
+  "H12pred_freq_t0",
+  "H12ER_visit_t0",
+  "H12hospitalization_freqN_t0",
+  "FeNO",
+  "BMI",
+  "onset_late",
+  "eos_high",
+  "allergic",
+  "CRSwNP",
+  "CRSsNP",
+  "IgET1_replaced",
+  "ACQ_fu_day_t0",
+  "ACQ_fu_day_t3",
+  "ACQ_fu_day_t6",
+  "ACQ_fu_day_t9",
+  "ACQ_fu_day_t12",
+  starts_with("ACQscore"),
+  "CISF_fu_day_t0",
+  "CISF_fu_day_t3",
+  "CISF_fu_day_t6",
+  "CISF_fu_day_t9",
+  "CISF_fu_day_t12",
+  starts_with("CISF_totscore"),
+  "HCU_fu_day_t3",
+  "HCU_fu_day_t6",
+  "HCU_fu_day_t9",
+  "HCU_fu_day_t12",
+  starts_with("HCUER_visit"),
+  starts_with("HCUhospitalization_frqN_"),
+  starts_with("HCUpred_frq"),
+  starts_with("HCUpred_main"),
+  starts_with("HCUbiological_use")
+)
+
+# Add work productivity data from the WPAI subset.
+data_wide_wpai <- dplyr::select(
+  subset_wpai,
+  "patid",
+  "activity_impairment_perc_t0",
+  "activity_impairment_perc_t3",
+  "activity_impairment_perc_t6",
+  "activity_impairment_perc_t9",
+  "activity_impairment_perc_t12"
+)
+
+data_wide_imp <- left_join(
+  data_wide_imp,
+  data_wide_wpai,
+  by = "patid"
+)
+
+# Add mAQLQ follow-up timing variables from the main dataset.
+data_wide_aqlq_fuday <- dplyr::select(
+  data_final_wide,
+  "patid",
+  "mAQLQ_fu_day_t0",
+  "mAQLQ_fu_day_t3",
+  "mAQLQ_fu_day_t6",
+  "mAQLQ_fu_day_t9",
+  "mAQLQ_fu_day_t12"
+)
+
+# Add mAQLQ total scores from the questionnaire subset.
+data_wide_aqlq <- dplyr::select(
+  subset_AQLQ,
+  "patid",
+  starts_with("mAQLQtotal")
+)
+
+data_wide_imp <- left_join(
+  data_wide_imp,
+  data_wide_aqlq_fuday,
+  by = "patid"
+)
+
+data_wide_imp <- left_join(
+  data_wide_imp,
+  data_wide_aqlq,
+  by = "patid"
+)
+
+# Add HADS follow-up timing variables and anxiety/depression scores.
+data_wide_hads_fuday <- dplyr::select(
+  data_final_wide,
+  "patid",
+  "HADS_fu_day_t0",
+  "HADS_fu_day_t6",
+  "HADS_fu_day_t12"
+)
+
+data_wide_hads <- dplyr::select(
+  subset_HADS,
+  "patid",
+  starts_with("HADS_D_"),
+  starts_with("HADS_A_")
+)
+
+data_wide_imp <- left_join(
+  data_wide_imp,
+  data_wide_hads_fuday,
+  by = "patid"
+)
+
+data_wide_imp <- left_join(
+  data_wide_imp,
+  data_wide_hads,
+  by = "patid"
+)
+
+# If baseline maintenance oral corticosteroid use was recorded as "no"
+# and the dose is missing, assign a dose of zero.
+data_wide_imp <- data_wide_imp %>%
+  mutate(
+    STRpred_main_mgN_t0 = ifelse(
+      is.na(STRpred_main_mgN_t0) & STRvar941_t0 == "nee",
+      0,
+      STRpred_main_mgN_t0
+    )
+  )
+
+# Remove variables that are not required for the imputation dataset.
+data_wide_imp$STRvar941_t0 <- NULL
+data_wide_imp$HCUpred_main_mg_t3 <- NULL
+data_wide_imp$HCUpred_main_mgN_t3 <- NULL
+data_wide_imp$HCUpred_main_mg_t6 <- NULL
+data_wide_imp$HCUpred_main_mgN_t6 <- NULL
+data_wide_imp$HCUpred_main_mg_t9 <- NULL
+data_wide_imp$HCUpred_main_mgN_t9 <- NULL
+data_wide_imp$HCUpred_main_mg_t12 <- NULL
+data_wide_imp$HCUpred_main_mgN_t12 <- NULL
+data_wide_imp$ACQscore <- NULL
+
+# Identify variables treated as categorical in the imputation dataset.
+factors <- c(
+  "arm",
+  "STRgender_t0",
+  "STRbiological_none_t0",
+  "HCUpred_main_t3",
+  "HCUpred_main_t6",
+  "HCUpred_main_t9",
+  "HCUpred_main_t12",
+  "HCUbiological_use_t3",
+  "HCUbiological_use_t6",
+  "HCUbiological_use_t9",
+  "HCUbiological_use_t12",
+  "FeNO",
+  "onset_late",
+  "eos_high",
+  "allergic",
+  "CRSwNP",
+  "CRSsNP"
+)
+
+# Convert categorical variables to factors.
+# The intermediate character conversion standardises their representation.
+data_wide_imp <- data_wide_imp %>%
+  mutate(across(all_of(factors), as.character))
+
+data_wide_imp <- data_wide_imp %>%
+  mutate(across(all_of(factors), as.factor))
+
+# Rename baseline demographic and oral corticosteroid dose variables
+# to shorter, more descriptive names.
+data_wide_imp <- rename(
+  data_wide_imp,
+  sex = "STRgender_t0",
+  age = "STRage_t0",
+  predmainMG_baseline = "STRpred_main_mgN_t0"
+)
+
+# Recode the baseline biological-treatment checkbox response:
+# "Checked" indicates no biological treatment, while "Unchecked"
+# indicates biological treatment use.
+data_wide_imp <- data_wide_imp %>%
+  mutate(
+    STRbiological_none_t0 = case_when(
+      STRbiological_none_t0 == "Checked" ~ "Nee",
+      STRbiological_none_t0 == "Unchecked" ~ "Ja",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+
+
+# 1.1 Add follow-up exacerbation data
+
+```{r}
+# Import time-to-first-exacerbation data and the dataset containing
+# weekly exacerbation information.
+data_firstexa <- read.xlsx(
+  "data/processed/timetoevent.xlsx",
+  sheet = 1
+)
+
+data_EXAC <- read.xlsx(
+  "data/processed/data_EXAC.xlsx",
+  sheet = 1
+)
+
+# Calculate the number of distinct follow-up weeks available per participant.
+data_EXAC <- data_EXAC %>%
+  group_by(patid) %>%
+  mutate(n_weeks_per_patient = n_distinct(fu_week)) %>%
+  ungroup()
+
+# Retain one row per participant and select the variables needed
+# to merge exacerbation counts into the imputation dataset.
+data_EXAC_1row <- data_EXAC %>%
+  group_by(patid) %>%
+  slice(1)
+
+data_EXAC_1row <- data_EXAC_1row %>%
+  select(
+    patid,
+    arm,
+    total_n_exa,
+    n_weeks_per_patient
+  )
+
+# Ensure the participant identifier and treatment group use compatible
+# data types in both datasets before joining.
+data_EXAC_1row$patid <- as.character(data_EXAC_1row$patid)
+data_EXAC_1row$arm <- as.character(data_EXAC_1row$arm)
+
+# Add exacerbation counts and follow-up duration to the imputation dataset.
+data_wide_imp <- left_join(
+  data_wide_imp,
+  data_EXAC_1row,
+  by = c("patid", "arm")
+)
+
+# Set the exacerbation count to missing when fewer than 40 distinct
+# follow-up weeks are available, to avoid treating incomplete follow-up
+# as a complete exacerbation count.
+data_wide_imp <- data_wide_imp %>%
+  mutate(
+    severe_exacerbations_N = ifelse(
+      n_weeks_per_patient < 40,
+      NA,
+      total_n_exa
+    )
+  )
+
+# Remove the intermediate variables after deriving the analysis variable.
+data_wide_imp$total_n_exa <- NULL
+data_wide_imp$n_weeks_per_patient <- NULL
+```
+
+
+# 1.2 Save and reload the wide-format dataset
+
+```{r}
+# Save the prepared wide-format dataset for reuse in subsequent steps.
+# The output contains participant-level data and will therefore not be committed
+# to a public repository.
+write.xlsx(
+  data_wide_imp,
+  "data/processed/data_wide_imp.xlsx"
+)
+
+# Reload the saved dataset.
+data_wide_imp <- read.xlsx(
+  "data/processed/data_wide_imp.xlsx"
+)
+```
+
+
+# 1.3 Reshape the dataset to long format and prepare variables
+
+```{r}
+# Reshape the imputation dataset to long format ---------------------------
+
+# Convert repeated measurements from wide to long format.
+# The timepoint suffix is extracted into a separate variable, while
+# the shared variable name is retained as the column name.
+data_long_imp <- data_wide_imp %>%
+  pivot_longer(
+    cols = matches("_t(0|3|6|9|12)$"),
+    names_to = c(".value", "timepoint"),
+    names_pattern = "(.*)_t(0|3|6|9|12)"
+  )
+
+# For baseline health care utilisation, use zero when the follow-up
+# timing variable is missing.
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCU_fu_day = ifelse(
+      timepoint == 0 & is.na(HCU_fu_day),
+      0,
+      HCU_fu_day
+    )
+  )
+
+# Fill missing baseline health care utilisation measures with the
+# corresponding values collected at baseline.
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUpred_frq = ifelse(
+      timepoint == 0 & is.na(HCUpred_frq),
+      H12pred_freq,
+      HCUpred_frq
+    )
+  )
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUER_visit = ifelse(
+      timepoint == 0 & is.na(HCUER_visit),
+      H12ER_visit,
+      HCUER_visit
+    )
+  )
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUhospitalization_frqN = ifelse(
+      timepoint == 0 & is.na(HCUhospitalization_frqN),
+      H12hospitalization_freqN,
+      HCUhospitalization_frqN
+    )
+  )
+
+# Convert baseline biological-treatment status to a factor before
+# using it to fill missing baseline follow-up values.
+data_long_imp$STRbiological_none <- as.factor(
+  data_long_imp$STRbiological_none
+)
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUbiological_use = if_else(
+      timepoint == 0 & is.na(HCUbiological_use),
+      STRbiological_none,
+      HCUbiological_use
+    )
+  )
+
+# Recode biological-treatment use as 0/1.
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUbiological_use = case_when(
+      HCUbiological_use == "Nee" ~ "0",
+      HCUbiological_use == "Ja" ~ "1"
+    )
+  )
+
+# Derive baseline maintenance oral corticosteroid use from the baseline
+# dose when the corresponding follow-up variable is missing.
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUpred_main = case_when(
+      is.na(HCUpred_main) &
+        timepoint == 0 &
+        predmainMG_baseline <= 0 ~ "nee",
+      is.na(HCUpred_main) &
+        timepoint == 0 &
+        predmainMG_baseline > 0 ~ "ja",
+      !is.na(HCUpred_main) ~ HCUpred_main
+    )
+  )
+
+# Recode maintenance oral corticosteroid use as 0/1.
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCUpred_main = case_when(
+      HCUpred_main == "nee" ~ "0",
+      HCUpred_main == "ja" ~ "1"
+    )
+  )
+
+# Remove baseline variables that are no longer required after filling
+# the corresponding long-format baseline values.
+data_long_imp$STRbiological_none <- NULL
+data_long_imp$H12hospitalization_freqN <- NULL
+data_long_imp$H12ER_visit <- NULL
+data_long_imp$H12pred_freq <- NULL
+
+# Replace missing questionnaire timing values with the scheduled
+# assessment day for each follow-up timepoint.
+# These are nominal study days: baseline and approximately 12-week intervals.
+data_long_imp <- data_long_imp %>%
+  mutate(
+    ACQ_fu_day = case_when(
+      is.na(ACQ_fu_day) & timepoint == 0 ~ 0,
+      is.na(ACQ_fu_day) & timepoint == 3 ~ 84,
+      is.na(ACQ_fu_day) & timepoint == 6 ~ 168,
+      is.na(ACQ_fu_day) & timepoint == 9 ~ 252,
+      is.na(ACQ_fu_day) & timepoint == 12 ~ 336,
+      TRUE ~ ACQ_fu_day
+    )
+  )
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    mAQLQ_fu_day = case_when(
+      is.na(mAQLQ_fu_day) & timepoint == 0 ~ 0,
+      is.na(mAQLQ_fu_day) & timepoint == 3 ~ 84,
+      is.na(mAQLQ_fu_day) & timepoint == 6 ~ 168,
+      is.na(mAQLQ_fu_day) & timepoint == 9 ~ 252,
+      is.na(mAQLQ_fu_day) & timepoint == 12 ~ 336,
+      TRUE ~ mAQLQ_fu_day
+    )
+  )
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    CISF_fu_day = case_when(
+      is.na(CISF_fu_day) & timepoint == 0 ~ 0,
+      is.na(CISF_fu_day) & timepoint == 3 ~ 84,
+      is.na(CISF_fu_day) & timepoint == 6 ~ 168,
+      is.na(CISF_fu_day) & timepoint == 9 ~ 252,
+      is.na(CISF_fu_day) & timepoint == 12 ~ 336,
+      TRUE ~ CISF_fu_day
+    )
+  )
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HADS_fu_day = case_when(
+      is.na(HADS_fu_day) & timepoint == 0 ~ 0,
+      is.na(HADS_fu_day) & timepoint == 6 ~ 168,
+      is.na(HADS_fu_day) & timepoint == 12 ~ 336,
+      TRUE ~ HADS_fu_day
+    )
+  )
+
+data_long_imp <- data_long_imp %>%
+  mutate(
+    HCU_fu_day = case_when(
+      is.na(HCU_fu_day) & timepoint == 0 ~ 0,
+      is.na(HCU_fu_day) & timepoint == 3 ~ 84,
+      is.na(HCU_fu_day) & timepoint == 6 ~ 168,
+      is.na(HCU_fu_day) & timepoint == 9 ~ 252,
+      is.na(HCU_fu_day) & timepoint == 12 ~ 336,
+      TRUE ~ HCU_fu_day
+    )
+  )
+
+# Convert count variables and the timepoint to numeric values.
+data_long_imp$HCUhospitalization_frqN <- as.numeric(
+  data_long_imp$HCUhospitalization_frqN
+)
+
+data_long_imp$HCUER_visit <- as.numeric(
+  data_long_imp$HCUER_visit
+)
+
+data_long_imp$HCUpred_frq <- as.numeric(
+  data_long_imp$HCUpred_frq
+)
+
+data_long_imp$timepoint <- as.numeric(
+  data_long_imp$timepoint
+)
+```
+
+
+
+# 1.4 Specify the multilevel imputation models
+
+```{r}
+# Specify methods and predictors for multilevel multiple imputation -----
+
+# The cluster identifier must be integer-valued for the selected
+# multilevel imputation methods.
+data_long_imp$patid <- as.integer(data_long_imp$patid)
+
+# Set the imputation method for each variable.
+meth <- make.method(data_long_imp)
+
+# Binary time-varying variables: multilevel joint modelling.
+meth[c("HCUpred_main", "HCUbiological_use")] <- "2l.jomo"
+
+# Continuous or count time-varying variables: multilevel normal models.
+meth[c(
+  "ACQscore",
+  "mAQLQtotal",
+  "CISF_totscore",
+  "HADS_D",
+  "HADS_A",
+  "HCUER_visit",
+  "HCUpred_frq",
+  "HCUhospitalization_frqN",
+  "activity_impairment_perc",
+  "severe_exacerbations_N"
+)] <- "2l.pan"
+
+# Time-fixed categorical variables: predictive mean matching at the
+# participant level.
+meth[c(
+  "arm",
+  "sex",
+  "FeNO",
+  "onset_late",
+  "eos_high",
+  "allergic",
+  "CRSwNP",
+  "CRSsNP"
+)] <- "2lonly.pmm"
+
+# Time-fixed continuous variables: normal imputation at the
+# participant level.
+meth[c(
+  "age",
+  "predmainMG_baseline",
+  "BMI",
+  "IgET1_replaced"
+)] <- "2lonly.norm"
+
+# Check that the method vector matches the columns of the dataset.
+all(names(meth) == colnames(data_long_imp)) # Expected: TRUE
+
+# Create the predictor matrix, which specifies which variables predict
+# each variable being imputed.
+pred <- make.predictorMatrix(data_long_imp)
+
+# Mark participant ID as the clustering variable in the two-level models.
+pred[, "patid"] = -2
+
+# Specify a random slope for time for selected time-varying outcomes.
+pred[c(
+  "ACQscore",
+  "mAQLQtotal",
+  "CISF_totscore",
+  "HADS_D",
+  "HADS_A",
+  "activity_impairment_perc",
+  "HCUER_visit",
+  "HCUpred_frq",
+  "HCUhospitalization_frqN"
+), "timepoint"] <- 2
+
+# Exclude the questionnaire and HCU timing variables from the predictor
+# matrix. These variables are retained as auxiliary information but are
+# not used as predictors or imputation targets.
+pred[, c(
+  "ACQ_fu_day",
+  "mAQLQ_fu_day",
+  "CISF_fu_day",
+  "HADS_fu_day",
+  "HCU_fu_day"
+)] = 0
+
+pred[c(
+  "ACQ_fu_day",
+  "mAQLQ_fu_day",
+  "CISF_fu_day",
+  "HADS_fu_day",
+  "HCU_fu_day"
+), ] = 0
+
+# Include cluster means of other time-varying outcomes as predictors
+# in the imputation models for the listed outcomes.
+pred[
+  "ACQscore",
+  c("mAQLQtotal", "CISF_totscore", "HADS_D", "HADS_A",
+    "activity_impairment_perc")
+] <- 3
+
+pred[
+  "mAQLQtotal",
+  c("ACQscore", "CISF_totscore", "HADS_D", "HADS_A",
+    "activity_impairment_perc")
+] <- 3
+
+pred[
+  "CISF_totscore",
+  c("ACQscore", "mAQLQtotal", "HADS_D", "HADS_A",
+    "activity_impairment_perc")
+] <- 3
+
+pred[
+  "HADS_D",
+  c("ACQscore", "CISF_totscore", "mAQLQtotal", "HADS_A",
+    "activity_impairment_perc")
+] <- 3
+
+pred[
+  "HADS_A",
+  c("ACQscore", "CISF_totscore", "HADS_D", "mAQLQtotal",
+    "activity_impairment_perc")
+] <- 3
+
+pred[
+  "activity_impairment_perc",
+  c("ACQscore", "CISF_totscore", "HADS_D", "HADS_A",
+    "mAQLQtotal")
+] <- 3
+```
+
+
+
+# 1.5 Run and assess multiple imputation
+
+```{r}
+# Run multilevel multiple imputation -------------------------------------
+
+# Generate 10 imputed datasets using 30 iterations per dataset.
+# The seed ensures reproducibility.
+imp <- mice(
+  data_long_imp,
+  m = 10,
+  maxit = 30,
+  seed = 2026,
+  predictorMatrix = pred,
+  method = meth
+)
+
+# Inspect any logged warnings or issues from the imputation process.
+imp$loggedEvents
+
+# Review trace plots and the distributions of imputed values.
+plot(imp)
+
+densityplot(
+  imp,
+  ~ ACQscore + CISF_totscore + mAQLQtotal +
+    HADS_D + HADS_A + activity_impairment_perc
+)
+
+densityplot(
+  imp,
+  ~ HCUER_visit + HCUpred_frq + HCUhospitalization_frqN +
+    severe_exacerbations_N
+)
+```
+
+
+
+# 1.6 Export and reload the imputed datasets
+
+```{r}
+# Export the imputed datasets for use in subsequent analyses.
+imp_complete <- complete(imp, "long", include = TRUE)
+
+write.mice.imputation(
+  mi.res = imp,
+  name = "data/processed/imp_davos_withHCU_andEXA",
+  mids2spss = FALSE
+)
+
+# Reload the saved imputation object and long-format imputed data.
+imp <- miceadds::load.Rdata2(
+  filename = "data/processed/imp_davos_withHCU_andEXA/imp_davos_withHCU_andEXA.Rdata"
+)
+
+imp_complete <- read.table(
+  "data/processed/imp_davos_withHCU_andEXA/imp_davos_withHCU_andEXA__LONG.dat",
+  header = TRUE
+)
+```
+
+
+# 2. Multiple imputation for the time-to-event analysis
+
+```{r}
+# Multiple imputation: time-to-event analysis -----------------------------
+
+# Study context:
+# Randomised controlled trial comparing control and intervention.
+# Primary outcome: time to first severe asthma exacerbation over 48 weeks.
+#
+# Approach:
+# Use risk-score imputation to address potentially informative censoring
+# among participants censored before the 48-week data cutoff. Fit Cox
+# regression models to the imputed datasets and pool the results.
+#
+# Important: this approach relies on assumptions about the relationship
+# between early censoring and the underlying risk of an exacerbation.
+```
+
+
+# 2.1 Set up the analysis dataset
+
+```{r}
+# Merge time-to-event outcomes with baseline covariates.
+# The join uses participant ID and treatment arm.
+data_wide_imp_timetoevent <- left_join(
+  data_wide_imp,
+  data_timetoevent,
+  by = c("patid", "arm")
+)
+
+# Load the package used for risk-score imputation and the survival
+# analysis functions.
+# Install packages separately if they are not already available.
+# install.packages("InformativeCensoring")
+
+library(InformativeCensoring)
+library(survival)
+```
+
+
+
+# 2.2 Classify censoring type
+
+```{r}
+# Classify censoring for the InformativeCensoring package ---------------
+
+# Censoring categories:
+# 0 = observed event
+# 1 = censored before the 48-week data cutoff; treated as potentially
+#     informatively censored and eligible for imputation
+# 2 = censored at or after the 48-week cutoff; treated as administrative
+#     censoring and not imputed
+#
+# The data cutoff (DCO) is set to 48 weeks.
+data_wide_imp_timetoevent$DCO.time <- 48
+
+# Flag participants censored before the data cutoff for imputation.
+data_wide_imp_timetoevent <- data_wide_imp_timetoevent %>%
+  mutate(
+    to.impute = case_when(
+      status == 0 & time < 48 ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# Assign the censoring category based on event status and follow-up time.
+data_wide_imp_timetoevent <- data_wide_imp_timetoevent %>%
+  mutate(
+    censor.type = case_when(
+      status == 1 ~ 0,
+      status == 0 & time < 48 ~ 1,
+      status == 0 & time >= 48 ~ 2
+    )
+  )
+```
+
+
+# 2.3 Prepare data for imputation
+
+```{r}
+# Prepare data for risk-score imputation ---------------------------------
+
+# Set the random seed for reproducibility.
+set.seed(2026)
+
+# Select variables required for the imputation and survival analyses.
+test <- select(
+  data_wide_imp_timetoevent,
+  arm,
+  FeNO,
+  sex,
+  age,
+  eos_high,
+  H12pred_freq_t0,
+  status,
+  time,
+  patid,
+  DCO.time,
+  to.impute,
+  censor.type
+)
+
+# Create an adjusted follow-up time:
+# - Set time zero to one week.
+# - Cap times beyond the 48-week data cutoff at 48 weeks.
+test <- test %>%
+  mutate(
+    time_adj = case_when(
+      time == 0 ~ 1,
+      time > 48 ~ 48,
+      TRUE ~ time
+    ),
+    .after = time
+  )
+
+# Convert treatment arm, FeNO, and sex to factors for model fitting.
+test$arm <- factor(as.character(test$arm))
+test$FeNO <- factor(as.character(test$FeNO))
+test$sex <- as.factor(test$sex)
+
+# Create numeric versions of binary predictors for use in ScoreImpute.
+# Numeric coding avoids potential factor-level problems in bootstrap
+# samples where a category may be absent.
+test$arm_num <- as.numeric(as.character(test$arm))
+test$FeNO_num <- as.numeric(as.character(test$FeNO))
+test$eos_num <- as.numeric(as.character(test$eos_high))
+
+# Check the relationship between the imputation flag and censoring type.
+# Participants flagged for imputation should have censor.type == 1.
+table(test$to.impute, test$censor.type)
+
+# Inspect the records flagged for imputation.
+filter(test, to.impute == TRUE)
+```
+
+ 
+# 2.4 Specify the variable mapping and perform risk-score imputation
+
+```{r}
+# Map dataset columns to the variable names expected by the package.
+col.control <- col.headings(
+  arm = "arm",
+  has.event = "status",
+  time = "time_adj",
+  Id = "patid",
+  DCO.time = "DCO.time",
+  to.impute = "to.impute",
+  censor.type = "censor.type"
+)
+
+# Risk-score imputation ---------------------------------------------------
+
+# ScoreImpute uses an event model to estimate risk scores and bootstrap
+# resampling to reflect uncertainty when imputing event times for
+# participants censored before the data cutoff.
+#
+# The imputation model includes treatment arm, FeNO, eosinophil category,
+# age, sex, and prior exacerbation frequency.
+#
+# An unstratified bootstrap is used here. The number of imputed datasets
+# is set to 10.
+imp_cox <- ScoreImpute(
+  test,
+  event.model = ~ arm_num + FeNO_num + eos_num + age + sex + H12pred_freq_t0,
+  col.control = col.control,
+  bootstrap.strata = rep(1, nrow(test)),
+  m = 10
+)
+
+# Inspect any warnings or logged issues from the imputation.
+imp_cox$logged.events
+
+# Extract and inspect the first imputed dataset.
+# impute.time and impute.event contain the survival time and event status
+# used for the imputed analysis.
+imp1 <- ExtractSingle(imp_cox, index = 1)
+
+imp1$data %>%
+  filter(to.impute == TRUE) %>%
+  select(
+    patid,
+    arm_num,
+    FeNO_num,
+    time_adj,
+    impute.time,
+    impute.event
+  )
+```
+
+
+# 2.5 Fit and pool Cox models
+
+```{r}
+# Fit Cox models and pool results across imputed datasets ---------------
+
+# The analysis model includes treatment arm and FeNO.
+# FeNO was used to stratify randomisation.
+#
+# ImputeStat pools estimates across the imputed datasets.
+imputed.fits <- ImputeStat(
+  imp_cox,
+  formula = ~ arm + FeNO,
+  method = "Cox"
+)
+
+# Review the pooled model results.
+summary(imputed.fits)
+
+# Inspect estimates and variance information from the imputed datasets.
+imputed.fits$statistics
+
+# Calculate the hazard ratio and 95% confidence interval from the
+# specified log hazard ratio and its variance.
+# These values are entered directly rather than extracted automatically
+# from the pooled model object.
+log_hr <- 0.0176726
+var_log_hr <- 0.03875343
+
+hr <- exp(log_hr)
+
+ci_lower <- exp(log_hr - 1.96 * sqrt(var_log_hr))
+ci_upper <- exp(log_hr + 1.96 * sqrt(var_log_hr))
+
+hr
+ci_lower
+ci_upper
+```
+
+
+# 2.6 Assess the proportional hazards assumption
+
+```{r}
+# Assess the proportional hazards assumption -----------------------------
+
+# Assess proportional hazards separately in each imputed dataset.
+# The Cox model uses the imputed event time and event indicator.
+ph_tests <- lapply(1:imp$m, function(i) {
+  d <- ExtractSingle(imp, index = i)
+
+  fit <- coxph(
+    Surv(impute.time, impute.event) ~ arm + FeNO,
+    data = d$data
+  )
+
+  cox.zph(fit, transform = "km")
+})
+
+# Inspect the proportional hazards tests for each imputed dataset.
+lapply(ph_tests, print)
+```
+
+
+# 2.7 Compare the original and imputed survival models
+
+```{r}
+# Compare survival models before and after imputation --------------------
+
+# Fit a Cox model to the original event and censoring times.
+fit_original <- coxph(
+  Surv(time_adj, status) ~ arm + FeNO,
+  data = test
+)
+
+summary(fit_original)
+
+# Fit the same covariate model using the imputed survival time and
+# event indicator from the first imputed dataset.
+fit_imp1 <- coxph(
+  Surv(impute.time, impute.event) ~ arm + FeNO,
+  data = imp1$data
+)
+
+summary(fit_imp1)
+```
+
